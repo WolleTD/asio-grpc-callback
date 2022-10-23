@@ -6,10 +6,26 @@ service Hello {
   rpc greet (Request) returns (Reply) {}
 }
 
+service AsyncHello {
+  rpc greet (Request) returns (Reply) {}
+  rpc greet_stream (StreamRequest) returns (stream StreamReply) {}
+}
+
 message Request {
   string name = 1;
+  int32 delay_ms = 2;
+}
+
+message StreamRequest {
+  Request base = 1;
+  int32 count = 2;
 }
 
 message Reply {
   string greeting = 1;
+}
+
+message StreamReply {
+  string greeting = 1;
+  int32 count = 2;
 }
