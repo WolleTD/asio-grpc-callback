@@ -118,17 +118,25 @@ private:
     executor_type ex;
 };
 
-std::unique_ptr<grpc::Server> start_server(const std::string &address, HelloServiceImpl &service,
-                                           AsyncHelloServiceImpl &async_service) {
-    grpc::EnableDefaultHealthCheckService(true);
-    auto builder = grpc::ServerBuilder();
+struct HelloServer : asio_grpc::Server {
+    HelloServer(asio::io_context &ctx, const std::string &address) : asio_grpc::Server(ctx), async_service(ctx) {
+        grpc::EnableDefaultHealthCheckService(true);
+        auto builder = grpc::ServerBuilder();
 
-    builder.AddListeningPort(address, grpc::InsecureServerCredentials());
-    builder.RegisterService(&service);
-    builder.RegisterService(&async_service);
+        builder.AddListeningPort(address, grpc::InsecureServerCredentials());
+        builder.RegisterService(&sync_service);
+        builder.RegisterService(&async_service);
 
-    return builder.BuildAndStart();
-}
+        set_grpc_server(builder.BuildAndStart());
+    }
+
+    HelloServer(HelloServer &&) noexcept = delete;
+    HelloServer &operator=(HelloServer &&) noexcept = delete;
+
+private:
+    HelloServiceImpl sync_service;
+    AsyncHelloServiceImpl async_service;
+};
 
 int main(int argc, const char *argv[]) {
     if (argc != 2) {
@@ -137,9 +145,7 @@ int main(int argc, const char *argv[]) {
     }
 
     asio::io_context ctx;
-    HelloServiceImpl sync_service;
-    auto service = AsyncHelloServiceImpl(ctx);
-    auto server = asio_grpc::Server(ctx, start_server(argv[1], sync_service, service));
+    auto server = HelloServer(ctx, argv[1]);
 
     auto sig = asio::signal_set(ctx, SIGINT, SIGTERM);
     sig.async_wait([&](auto, int) { server.shutdown(); });

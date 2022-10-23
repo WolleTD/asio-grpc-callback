@@ -174,6 +174,21 @@ struct Server {
         }}.detach();
     }
 
+protected:
+    template<typename Executor, typename = asio_grpc::enable_for_executor_t<Executor>>
+    explicit Server(Executor ex) : server_(nullptr), wait_channel_(ex) {}
+
+    template<typename ExecutionContext, typename = asio_grpc::enable_for_execution_context_t<ExecutionContext>>
+    explicit Server(ExecutionContext &ctx) : Server(ctx.get_executor()) {}
+
+    void set_grpc_server(std::unique_ptr<grpc::Server> server) {
+        if (!server_) {
+            server_ = std::move(server);
+        } else {
+            throw std::runtime_error("Can't replace gRPC server!\n");
+        }
+    }
+
 private:
     std::unique_ptr<grpc::Server> server_;
     asio::experimental::concurrent_channel<void(std::error_code, bool)> wait_channel_;
