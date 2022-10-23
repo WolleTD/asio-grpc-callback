@@ -1,5 +1,4 @@
 #include "asio-grpc.h"
-
 #include "hello.grpc.pb.h"
 #include <asio/bind_executor.hpp>
 #include <asio/co_spawn.hpp>
@@ -164,12 +163,12 @@ void run_cpp20(const std::string &addr, const std::string &name) {
         co_spawn(tp, coro3_1, error_handler);
         auto stream = a_client.greet_stream(makeStreamRequest(name, 100, 10));
         int i = 1;
-        for (;;) {
-            auto sreply = co_await stream->read_next(use_awaitable);
+        while (auto reply = co_await stream->read_next(use_awaitable)) {
             auto tid = current_thread_id();
-            print("Received stream response {} ({}) in thread {} ({}): {}\n", sreply.count(), i++, tid, tid == ctx_tid,
-                  sreply.greeting());
+            print("Received stream response {} ({}) in thread {} ({}): {}\n", reply->count(), i++, tid, tid == ctx_tid,
+                  reply->greeting());
         }
+        print("Stream terminated gracefully\n");
     };
 
     co_spawn(tp, coro1, error_handler);
@@ -221,12 +220,14 @@ void run_cpp17(const std::string &addr, const std::string &name) {
     });
 
     struct Reader {
-        void operator()(const std::exception_ptr &eptr, const StreamReply &reply) {
-            if (!eptr) {
+        void operator()(const std::exception_ptr &eptr, const std::optional<StreamReply> &reply) {
+            if (!eptr and reply) {
                 auto tid = current_thread_id();
-                print("Received stream response {} ({}) in thread {} ({}): {}\n", reply.count(), i++, tid,
-                      tid == ctx_tid, reply.greeting());
+                print("Received stream response {} ({}) in thread {} ({}): {}\n", reply->count(), i++, tid,
+                      tid == ctx_tid, reply->greeting());
                 stream->read_next(std::move(*this));
+            } else if (not reply) {
+                print("Stream terminated gracefully\n");
             } else {
                 try {
                     std::rethrow_exception(eptr);

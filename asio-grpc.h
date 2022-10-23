@@ -7,6 +7,7 @@
 #include <grpcpp/impl/codegen/client_callback.h>
 #include <grpcpp/impl/codegen/client_context.h>
 #include <grpcpp/impl/codegen/status.h>
+#include <optional>
 #include <stdexcept>
 
 namespace asio_grpc {
@@ -37,7 +38,8 @@ concept GrpcStreamCall =
         ::asio::completion_handler_for<T, void(grpc::ClientContext *, grpc::ClientReadReactor<Reply> *)>;
 
 template<typename T, typename Reply>
-concept GrpcStreamCompletionToken = ::asio::completion_token_for<T, void(std::exception_ptr, const Reply &)>;
+concept GrpcStreamCompletionToken =
+        ::asio::completion_token_for<T, void(std::exception_ptr, const std::optional<Reply> &)>;
 
 #define GRPC_CALL(X) ::asio_grpc::GrpcCall<X>
 #define GRPC_COMPLETION_TOKEN(X) ::asio_grpc::GrpcCompletionToken<X>
@@ -85,7 +87,7 @@ auto async_initiate_grpc(Ctx &ctx, CompletionToken &&token, Call &&call) {
 
 template<typename Reply>
 struct StreamChannel {
-    using channel_t = asio::experimental::concurrent_channel<void(std::exception_ptr, Reply)>;
+    using channel_t = asio::experimental::concurrent_channel<void(std::exception_ptr, std::optional<Reply>)>;
 
     template<typename Ex, GRPC_STREAM_CALL(Reply) RequestHandler,
              typename = std::enable_if_t<asio::execution::is_executor_v<Ex> || asio::is_executor<Ex>::value>>
@@ -121,7 +123,7 @@ struct StreamChannel {
         }
 
         void OnDone(const grpc::Status &status) override {
-            if (!status.ok()) { channel_.async_send(to_exception_ptr(status), reply_, asio::use_future).get(); }
+            channel_.async_send(to_exception_ptr(status), std::nullopt, asio::use_future).get();
             channel_.close();
         }
 
