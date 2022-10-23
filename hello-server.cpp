@@ -40,7 +40,9 @@ class HelloServiceImpl final : public Hello::Service {
 
 class AsyncHelloServiceImpl final : public AsyncHello::CallbackService {
 public:
-    explicit AsyncHelloServiceImpl(asio::io_context &ctx) : ctx_(ctx) {}
+    using executor_type = asio::io_context::executor_type;
+
+    explicit AsyncHelloServiceImpl(asio::io_context &ctx) : ex(ctx.get_executor()) {}
 
 private:
     ServerUnaryReactor *greet(CallbackServerContext *ctx, const Request *request, Reply *reply) override {
@@ -49,7 +51,7 @@ private:
         reply->set_greeting(msg);
 
         auto *reactor = ctx->DefaultReactor();
-        auto timer_ptr = std::make_unique<asio::steady_timer>(ctx_);
+        auto timer_ptr = std::make_unique<asio::steady_timer>(ex);
         auto &timer = *timer_ptr;
 
         timer.expires_after(std::chrono::milliseconds(request->delay_ms()));
@@ -66,8 +68,8 @@ private:
         auto msg = format("Hello {}!", request->base().name());
 
         struct Greeter : ServerWriteReactor<StreamReply> {
-            Greeter(asio::io_context &ctx, std::string message, size_t delay_ms, size_t num_replies)
-                : timer(ctx), message(std::move(message)), delay(delay_ms), num_replies(num_replies) {
+            Greeter(const executor_type &ex, std::string message, size_t delay_ms, size_t num_replies)
+                : timer(ex), message(std::move(message)), delay(delay_ms), num_replies(num_replies) {
                 send_next();
             }
 
@@ -109,10 +111,10 @@ private:
             size_t num_replies;
         };
 
-        return new Greeter(ctx_, msg, request->base().delay_ms(), request->count());
+        return new Greeter(ex, msg, request->base().delay_ms(), request->count());
     }
 
-    asio::io_context &ctx_;
+    executor_type ex;
 };
 
 std::unique_ptr<grpc::Server> start_server(const std::string &address, HelloServiceImpl &service,
@@ -140,6 +142,7 @@ int main(int argc, const char *argv[]) {
     auto work = asio::make_work_guard(ctx);
 
     auto sig = asio::signal_set(ctx, SIGINT, SIGTERM);
+    // Probably not a valid signal handler for a real-world server, just reset our gRPC server related work guard
     sig.async_wait([&work](auto, int) { work.reset(); });
 
     print("asio event loop running in {}\n", current_thread_id());
