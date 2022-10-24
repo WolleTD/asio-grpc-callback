@@ -1,7 +1,9 @@
 #include "hello.grpc.pb.h"
+#include <asio/bind_executor.hpp>
 #include <asio/io_context.hpp>
 #include <asio/post.hpp>
 #include <asio/steady_timer.hpp>
+#include <asio/thread_pool.hpp>
 #include <fmt/format.h>
 #include <future>
 #include <grpcpp/grpcpp.h>
@@ -79,12 +81,16 @@ public:
             auto reply = std::make_shared<Reply>();
             auto ctx = std::make_shared<ClientContext>();
 
-            stub_->async()->greet(ctx.get(), &request, reply.get(),
-                                  [reply, ctx, work, handler = std::forward<decltype(handler)>(handler)](
-                                          const grpc::Status &status) mutable {
-                                      print("gRPC handler is running in thread {}\n", current_thread_id());
-                                      handler(to_exception_ptr(status), *reply);
-                                  });
+            stub_->async()->greet(
+                    ctx.get(), &request, reply.get(),
+                    [reply, ctx, work,
+                     handler = std::forward<decltype(handler)>(handler)](const grpc::Status &status) mutable {
+                        print("gRPC handler is running in thread {}\n", current_thread_id());
+                        auto ex = asio::get_associated_executor(handler, work.get_executor());
+                        asio::post(ex, [status, reply, handler = std::forward<decltype(handler)>(handler)]() mutable {
+                            handler(to_exception_ptr(status), *reply);
+                        });
+                    });
         };
 
         return asio::async_initiate<CompletionToken, void(std::exception_ptr, Reply)>(initiation, token, request);
@@ -104,9 +110,19 @@ Request makeRequest(const std::string &name, int32_t delay_ms) {
 
 void run(const std::string &addr, const std::string &name) {
     asio::io_context ctx;
+    asio::thread_pool tp{1};
     asio::steady_timer timer(ctx);
 
+    auto ctx_tid = current_thread_id();
     print("Main thread id is: {}\n", current_thread_id());
+    auto p = std::promise<std::string>();
+    auto f = p.get_future();
+    asio::post(tp, [&p]() {
+        auto tid = current_thread_id();
+        p.set_value(tid);
+        print("Thread pool thread is: {}\n", tid);
+    });
+    auto tp_tid = f.get();
     print("Starting off with a synchronous request...\n");
     auto client = HelloClient(grpc::CreateChannel(addr, grpc::InsecureChannelCredentials()));
     auto reply = client.greet(makeRequest(name, 0));
@@ -115,12 +131,15 @@ void run(const std::string &addr, const std::string &name) {
     print("That worked, now let's throw some async in there!\n");
     auto a_client = AsyncHelloClient(ctx, grpc::CreateChannel(addr, grpc::InsecureChannelCredentials()));
 
-    a_client.greet(makeRequest(name, 1000), [](const std::exception_ptr &, const Reply &reply) {
-        print("Received async response 1 in thread {}: {}\n", current_thread_id(), reply.greeting());
-    });
+    a_client.greet(makeRequest(name, 1000),
+                   asio::bind_executor(tp, [&](const std::exception_ptr &, const Reply &reply) {
+                       auto tid = current_thread_id();
+                       print("Received async response 1 in thread {} ({}): {}\n", tid, tid == tp_tid, reply.greeting());
+                   }));
 
     a_client.greet(makeRequest(name, 2000), [&](const std::exception_ptr &, const Reply &reply) {
-        print("Received async response 2 in thread {}: {}\n", current_thread_id(), reply.greeting());
+        auto tid = current_thread_id();
+        print("Received async response 2 in thread {} ({}): {}\n", tid, tid == ctx_tid, reply.greeting());
         print("Restarting timer!\n");
 
         // This will run last!
@@ -131,9 +150,11 @@ void run(const std::string &addr, const std::string &name) {
 
     timer.expires_after(std::chrono::milliseconds(500));
     timer.async_wait([&](auto) {
-        a_client.greet(makeRequest(name, 1000), [](const std::exception_ptr &, const Reply &reply) {
-            print("Received async response 3 in thread {}: {}\n", current_thread_id(), reply.greeting());
-        });
+        a_client.greet(
+                makeRequest(name, 1000), asio::bind_executor(tp, [&](const std::exception_ptr &, const Reply &reply) {
+                    auto tid = current_thread_id();
+                    print("Received async response 3 in thread {} ({}): {}\n", tid, tid == tp_tid, reply.greeting());
+                }));
     });
     ctx.run();
 }
