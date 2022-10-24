@@ -1,14 +1,17 @@
 #include "hello.grpc.pb.h"
 #include <asio/bind_executor.hpp>
+#include <asio/experimental/concurrent_channel.hpp>
 #include <asio/io_context.hpp>
 #include <asio/post.hpp>
 #include <asio/steady_timer.hpp>
 #include <asio/thread_pool.hpp>
+#include <asio/use_future.hpp>
 #include <fmt/format.h>
 #include <future>
 #include <grpcpp/grpcpp.h>
 #include <sstream>
 #include <thread>
+#include <utility>
 
 using fmt::format;
 using fmt::print;
@@ -18,6 +21,7 @@ using hello::AsyncHello;
 using hello::Hello;
 using hello::Reply;
 using hello::Request;
+using hello::StreamReply;
 using hello::StreamRequest;
 
 std::string current_thread_id() {
@@ -96,6 +100,58 @@ public:
         return asio::async_initiate<CompletionToken, void(std::exception_ptr, Reply)>(initiation, token, request);
     }
 
+    // asio is much lower level and doesn't have such thing as a stream. In C++20, we can probably reflect this onto co_yield,
+    // but this example shall not use coroutines. Even though it's really hard.
+    // So, to get into solution space: the user knows he's calling a protobuf stream method [citation needed], so we can invent
+    // our own API. The gRPC API requires us to build an object anyway, so we could use a public object with its own read()
+    // method – fortunately, asio 1.24 has experimental channels, so lets try those!
+    struct GreetStream;
+
+    std::unique_ptr<GreetStream> greet_stream(const StreamRequest &request) {
+        return std::make_unique<GreetStream>(this, request);
+    }
+
+    struct GreetStream {
+        using channel_t = asio::experimental::concurrent_channel<void(std::exception_ptr, StreamReply)>;
+
+        GreetStream(AsyncHelloClient *self, const StreamRequest &request)
+            : channel_(self->ctx_), reader_(self->stub_.get(), request, channel_) {}
+
+        template<typename CompletionToken>
+        auto read_next(CompletionToken &&token) {
+            return channel_.async_receive(std::forward<CompletionToken>(token));
+        }
+
+        struct GreetReader : public grpc::ClientReadReactor<StreamReply> {
+            GreetReader(AsyncHello::Stub *stub, const StreamRequest &request, channel_t &channel) : channel_(channel) {
+                stub->async()->greet_stream(&ctx_, &request, this);
+                StartRead(&reply_);
+                StartCall();
+            }
+
+            void OnReadDone(bool ok) override {
+                if (ok) {
+                    channel_.async_send({}, reply_, asio::use_future).get();
+                    StartRead(&reply_);
+                }
+            }
+
+            void OnDone(const grpc::Status &status) override {
+                if (!status.ok()) { channel_.async_send(to_exception_ptr(status), reply_, asio::use_future).get(); }
+                channel_.close();
+            }
+
+        private:
+            ClientContext ctx_;
+            StreamReply reply_;
+            channel_t &channel_;
+        };
+
+    private:
+        channel_t channel_;
+        GreetReader reader_;
+    };
+
 private:
     asio::io_context &ctx_;
     std::unique_ptr<AsyncHello::Stub> stub_;
@@ -105,6 +161,14 @@ Request makeRequest(const std::string &name, int32_t delay_ms) {
     Request request;
     request.set_name(name);
     request.set_delay_ms(delay_ms);
+    return request;
+}
+
+StreamRequest makeStreamRequest(const std::string &name, int32_t delay_ms, int32_t num_replies) {
+    StreamRequest request;
+    request.mutable_base()->set_name(name);
+    request.mutable_base()->set_delay_ms(delay_ms);
+    request.set_count(num_replies);
     return request;
 }
 
@@ -148,6 +212,25 @@ void run(const std::string &addr, const std::string &name) {
                 [=](auto) { print("Timer started in response 2 expired. Reply was: {}\n", reply.greeting()); });
     });
 
+    struct Reader {
+        void operator()(const std::exception_ptr &eptr, const StreamReply &reply) {
+            if (!eptr) {
+                auto tid = current_thread_id();
+                print("Received stream response {} ({}) in thread {} ({}): {}\n", reply.count(), i++, tid,
+                      tid == ctx_tid, reply.greeting());
+                stream->read_next(std::move(*this));
+            } else {
+                try {
+                    std::rethrow_exception(eptr);
+                } catch (std::runtime_error &e) { print("Stream error: {} i = {}\n", e.what(), i); }
+            }
+        }
+
+        std::unique_ptr<AsyncHelloClient::GreetStream> stream;
+        const std::string &ctx_tid;
+        int i = 1;
+    };
+
     timer.expires_after(std::chrono::milliseconds(500));
     timer.async_wait([&](auto) {
         a_client.greet(
@@ -155,6 +238,9 @@ void run(const std::string &addr, const std::string &name) {
                     auto tid = current_thread_id();
                     print("Received async response 3 in thread {} ({}): {}\n", tid, tid == tp_tid, reply.greeting());
                 }));
+        auto stream = a_client.greet_stream(makeStreamRequest(name, 100, 10));
+        auto &stream_ref = *stream;
+        stream_ref.read_next(Reader{std::move(stream), ctx_tid});
     });
     ctx.run();
 }
