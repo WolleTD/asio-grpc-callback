@@ -107,10 +107,8 @@ private:
     asio::io_context &ctx_;
 };
 
-void run_server(const std::string &address, asio::io_context &ctx) {
-    HelloServiceImpl service;
-    auto async_service = AsyncHelloServiceImpl(ctx);
-
+std::unique_ptr<grpc::Server> start_server(const std::string &address, HelloServiceImpl &service,
+                                           AsyncHelloServiceImpl &async_service) {
     grpc::EnableDefaultHealthCheckService(true);
     auto builder = grpc::ServerBuilder();
 
@@ -118,10 +116,7 @@ void run_server(const std::string &address, asio::io_context &ctx) {
     builder.RegisterService(&service);
     builder.RegisterService(&async_service);
 
-    auto server = builder.BuildAndStart();
-    fmt::print("Server listening on {} (Thread {})\n", address, current_thread_id());
-
-    server->Wait();
+    return builder.BuildAndStart();
 }
 
 int main(int argc, const char *argv[]) {
@@ -131,12 +126,11 @@ int main(int argc, const char *argv[]) {
     }
 
     asio::io_context ctx;
+    HelloServiceImpl sync_service;
+    auto service = AsyncHelloServiceImpl(ctx);
+    auto server = start_server(argv[1], sync_service, service);
+    [[maybe_unused]] auto work = asio::make_work_guard(ctx);
 
-    std::thread([&]() {
-        [[maybe_unused]] auto work = asio::require(ctx.get_executor(), asio::execution::outstanding_work_t::tracked);
-        print("asio event loop running in {}\n", current_thread_id());
-        ctx.run();
-    }).detach();
-
-    run_server(argv[1], ctx);
+    print("asio event loop running in {}\n", current_thread_id());
+    ctx.run();
 }
