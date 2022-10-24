@@ -48,16 +48,16 @@ public:
 private:
     ServerUnaryReactor *greet(CallbackServerContext *ctx, const Request *request, Reply *reply) override {
         fmt::print("Server reacting async in Thread {}\n", current_thread_id());
-        auto msg = format("Hello {}!", request->name());
-        reply->set_greeting(msg);
 
         auto *reactor = ctx->DefaultReactor();
         auto timer_ptr = std::make_unique<asio::steady_timer>(ex);
         auto &timer = *timer_ptr;
 
         timer.expires_after(std::chrono::milliseconds(request->delay_ms()));
-        timer.async_wait([reactor, timer_ptr = std::move(timer_ptr)](auto ec) {
+        timer.async_wait([request, reply, reactor, timer_ptr = std::move(timer_ptr)](auto ec) {
             print("asio callback in thread {}\n", current_thread_id());
+            auto msg = format("Hello {}!", request->name());
+            reply->set_greeting(msg);
             reactor->Finish(ec ? grpc::Status::CANCELLED : grpc::Status::OK);
         });
 
