@@ -1,5 +1,6 @@
 #include "hello.grpc.pb.h"
 #include <asio/io_context.hpp>
+#include <asio/signal_set.hpp>
 #include <asio/steady_timer.hpp>
 #include <fmt/format.h>
 #include <grpcpp/grpcpp.h>
@@ -71,14 +72,21 @@ private:
             }
 
             void OnDone() override { delete this; }
-            void OnWriteDone(bool) override { send_next(); }
+
+            void OnWriteDone(bool ok) override {
+                if (ok) {
+                    send_next();
+                } else {
+                    Finish(grpc::Status::CANCELLED);
+                }
+            }
 
         private:
             void send_next() {
                 if (count <= num_replies) {
                     timer.expires_after(delay);
                     timer.async_wait([this](auto ec) {
-                        print("asio callback in thread {}\n", current_thread_id());
+                        print("asio stream callback in thread {}\n", current_thread_id());
                         if (ec) {
                             Finish(grpc::Status::CANCELLED);
                         } else {
@@ -129,8 +137,14 @@ int main(int argc, const char *argv[]) {
     HelloServiceImpl sync_service;
     auto service = AsyncHelloServiceImpl(ctx);
     auto server = start_server(argv[1], sync_service, service);
-    [[maybe_unused]] auto work = asio::make_work_guard(ctx);
+    auto work = asio::make_work_guard(ctx);
+
+    auto sig = asio::signal_set(ctx, SIGINT, SIGTERM);
+    sig.async_wait([&work](auto, int) { work.reset(); });
 
     print("asio event loop running in {}\n", current_thread_id());
     ctx.run();
+    print("asio event loop stopped\n");
+    server->Shutdown();
+    server->Wait();
 }
