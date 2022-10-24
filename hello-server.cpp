@@ -1,3 +1,4 @@
+#include "asio-grpc.h"
 #include "hello.grpc.pb.h"
 #include <asio/io_context.hpp>
 #include <asio/signal_set.hpp>
@@ -138,16 +139,13 @@ int main(int argc, const char *argv[]) {
     asio::io_context ctx;
     HelloServiceImpl sync_service;
     auto service = AsyncHelloServiceImpl(ctx);
-    auto server = start_server(argv[1], sync_service, service);
-    auto work = asio::make_work_guard(ctx);
+    auto server = asio_grpc::Server(ctx, start_server(argv[1], sync_service, service));
 
     auto sig = asio::signal_set(ctx, SIGINT, SIGTERM);
-    // Probably not a valid signal handler for a real-world server, just reset our gRPC server related work guard
-    sig.async_wait([&work](auto, int) { work.reset(); });
+    sig.async_wait([&](auto, int) { server.shutdown(); });
+    server.async_wait([](auto) { print("Server stopped\n"); });
 
     print("asio event loop running in {}\n", current_thread_id());
     ctx.run();
     print("asio event loop stopped\n");
-    server->Shutdown();
-    server->Wait();
 }

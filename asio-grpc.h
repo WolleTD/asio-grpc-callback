@@ -7,6 +7,7 @@
 #include <grpcpp/impl/codegen/client_callback.h>
 #include <grpcpp/impl/codegen/client_context.h>
 #include <grpcpp/impl/codegen/status.h>
+#include <grpcpp/server.h>
 #include <optional>
 #include <stdexcept>
 
@@ -52,8 +53,14 @@ concept GrpcStreamCompletionToken =
 #define GRPC_STREAM_COMPLETION_TOKEN(X) typename
 #endif
 
+template<typename Ex>
+using enable_for_executor_t = std::enable_if_t<asio::execution::is_executor_v<Ex> || asio::is_executor<Ex>::value>;
+
+template<typename Ctx>
+using enable_for_execution_context_t = std::enable_if_t<std::is_convertible_v<Ctx &, asio::execution_context &>>;
+
 template<typename Reply, typename Ex, GRPC_COMPLETION_TOKEN(Reply) CompletionToken, GRPC_CALL(Reply) Call,
-         typename = std::enable_if_t<asio::execution::is_executor_v<Ex> || asio::is_executor<Ex>::value>>
+         typename = enable_for_executor_t<Ex>>
 auto async_initiate_grpc(Ex ex, CompletionToken &&token, Call &&call) {
     auto initiation = [ex](auto &&handler, auto &&call) {
         // Keeps the io_context active, we are basically an io-object for asio
@@ -79,7 +86,7 @@ auto async_initiate_grpc(Ex ex, CompletionToken &&token, Call &&call) {
 }
 
 template<typename Reply, typename Ctx, GRPC_COMPLETION_TOKEN(Reply) CompletionToken, GRPC_CALL(Reply) Call,
-         typename = std::enable_if_t<std::is_convertible_v<Ctx &, asio::execution_context &>>>
+         typename = enable_for_execution_context_t<Ctx>>
 auto async_initiate_grpc(Ctx &ctx, CompletionToken &&token, Call &&call) {
     return async_initiate_grpc<Reply>(ctx.get_executor(), std::forward<CompletionToken>(token),
                                       std::forward<Call>(call));
@@ -89,15 +96,13 @@ template<typename Reply>
 struct StreamChannel {
     using channel_t = asio::experimental::concurrent_channel<void(std::exception_ptr, std::optional<Reply>)>;
 
-    template<typename Ex, GRPC_STREAM_CALL(Reply) RequestHandler,
-             typename = std::enable_if_t<asio::execution::is_executor_v<Ex> || asio::is_executor<Ex>::value>>
+    template<typename Ex, GRPC_STREAM_CALL(Reply) RequestHandler, typename = enable_for_executor_t<Ex>>
     StreamChannel(Ex ex, RequestHandler &&request)
         : channel_(ex), reader_(std::forward<RequestHandler>(request), channel_) {
         reader_.StartCall();
     }
 
-    template<typename Ctx, GRPC_STREAM_CALL(Reply) RequestHandler,
-             typename = std::enable_if_t<std::is_convertible_v<Ctx &, asio::execution_context &>>>
+    template<typename Ctx, GRPC_STREAM_CALL(Reply) RequestHandler, typename = enable_for_execution_context_t<Ctx>>
     StreamChannel(Ctx &ctx, RequestHandler &&request)
         : StreamChannel(ctx.get_executor(), std::forward<RequestHandler>(request)) {}
 
@@ -136,6 +141,42 @@ struct StreamChannel {
 private:
     channel_t channel_;
     StreamReader reader_;
+};
+
+struct Server {
+    template<typename Executor, typename = asio_grpc::enable_for_executor_t<Executor>>
+    Server(Executor ex, std::unique_ptr<grpc::Server> server) : server_(std::move(server)), wait_channel_(ex) {}
+
+    template<typename ExecutionContext, typename = asio_grpc::enable_for_execution_context_t<ExecutionContext>>
+    Server(ExecutionContext &ctx, std::unique_ptr<grpc::Server> server)
+        : Server(ctx.get_executor(), std::move(server)) {}
+
+    template<typename CompletionToken>
+    auto async_wait(CompletionToken &&token) {
+        return asio::async_initiate<CompletionToken, void(std::error_code)>(
+                [this](auto &&handler) {
+                    wait_channel_.async_receive([handler = std::forward<decltype(handler)>(handler)](
+                                                        auto ec, bool) mutable { handler(ec); });
+                },
+                token);
+    }
+
+    void shutdown(std::optional<std::chrono::milliseconds> timeout = std::nullopt) {
+        std::thread{[this, timeout]() {
+            if (timeout) {
+                server_->Shutdown(std::chrono::system_clock::now() + *timeout);
+            } else {
+                server_->Shutdown();
+            }
+            server_->Wait();
+            wait_channel_.try_send(std::error_code{}, true);
+            wait_channel_.close();
+        }}.detach();
+    }
+
+private:
+    std::unique_ptr<grpc::Server> server_;
+    asio::experimental::concurrent_channel<void(std::error_code, bool)> wait_channel_;
 };
 }// namespace asio_grpc
 
