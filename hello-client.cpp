@@ -1,7 +1,8 @@
+#include "asio-grpc.h"
+
 #include "hello.grpc.pb.h"
 #include <asio/bind_executor.hpp>
 #include <asio/co_spawn.hpp>
-#include <asio/experimental/concurrent_channel.hpp>
 #include <asio/io_context.hpp>
 #include <asio/post.hpp>
 #include <asio/steady_timer.hpp>
@@ -18,10 +19,11 @@
 using asio::awaitable;
 using asio::use_awaitable;
 #endif
+using asio_grpc::async_initiate_grpc;
+using asio_grpc::StreamChannel;
 using fmt::format;
 using fmt::print;
 using grpc::Channel;
-using grpc::ClientContext;
 using hello::AsyncHello;
 using hello::Hello;
 using hello::Reply;
@@ -35,35 +37,20 @@ std::string current_thread_id() {
     return ss.str();
 }
 
-class grpc_error : public std::runtime_error {
-public:
-    explicit grpc_error(const grpc::Status &status)
-        : std::runtime_error(status.error_message()), code_(status.error_code()) {}
-
-    [[nodiscard]] grpc::StatusCode error_code() const { return code_; }
-
-private:
-    grpc::StatusCode code_;
-};
-
-std::exception_ptr to_exception_ptr(const grpc::Status &status) {
-    return status.ok() ? std::exception_ptr{} : std::make_exception_ptr(grpc_error(status));
-}
-
 class HelloClient {
 public:
     explicit HelloClient(const std::shared_ptr<Channel> &channel) : stub_(Hello::NewStub(channel)) {}
 
     Reply greet(const Request &request) {
         auto reply = Reply();
-        auto ctx = ClientContext();
+        auto ctx = grpc::ClientContext();
 
         auto status = stub_->greet(&ctx, request, &reply);
 
         if (status.ok()) {
             return reply;
         } else {
-            throw grpc_error(status);
+            throw asio_grpc::grpc_error(status);
         }
     }
 
@@ -81,83 +68,19 @@ public:
 
     template<typename CompletionToken>
     auto greet(const Request &request, CompletionToken &&token) {
-        // Keeps the io_context active, we are basically an io-object for asio
-        auto work = asio::make_work_guard(ctx_);
-
-        auto initiation = [this, work](auto &&handler, const Request &request) {
-            print("asio initiation is running in thread {}\n", current_thread_id());
-
-            auto reply = std::make_shared<Reply>();
-            auto ctx = std::make_shared<ClientContext>();
-
-            using hT = decltype(handler);
-            using dhT = std::decay_t<hT>;
-            auto sp_handler = std::make_shared<dhT>(std::forward<hT>(handler));
-
-            stub_->async()->greet(ctx.get(), &request, reply.get(),
-                                  [reply, ctx, work, sp_handler](const grpc::Status &status) mutable {
-                                      print("gRPC handler is running in thread {}\n", current_thread_id());
-                                      auto ex = asio::get_associated_executor(*sp_handler, work.get_executor());
-                                      asio::post(ex, [status, reply, sp_handler]() {
-                                          (*sp_handler)(to_exception_ptr(status), *reply);
-                                      });
-                                  });
-        };
-
-        return asio::async_initiate<CompletionToken, void(std::exception_ptr, Reply)>(initiation, token, request);
+        return async_initiate_grpc<Reply>(
+                ctx_, token, [this, &request](grpc::ClientContext *ctx, Reply *reply, auto &&handler) {
+                    stub_->async()->greet(ctx, &request, reply, std::forward<decltype(handler)>(handler));
+                });
     }
 
-    // asio is much lower level and doesn't have such thing as a stream. In C++20, we can probably reflect this onto co_yield,
-    // but this example shall not use coroutines. Even though it's really hard.
-    // So, to get into solution space: the user knows he's calling a protobuf stream method [citation needed], so we can invent
-    // our own API. The gRPC API requires us to build an object anyway, so we could use a public object with its own read()
-    // method – fortunately, asio 1.24 has experimental channels, so lets try those!
-    struct GreetStream;
+    using GreetStream = StreamChannel<StreamReply>;
 
     std::unique_ptr<GreetStream> greet_stream(const StreamRequest &request) {
-        return std::make_unique<GreetStream>(this, request);
+        return std::make_unique<GreetStream>(ctx_, [this, &request](auto *ctx, auto *reactor) {
+            stub_->async()->greet_stream(ctx, &request, reactor);
+        });
     }
-
-    struct GreetStream {
-        using channel_t = asio::experimental::concurrent_channel<void(std::exception_ptr, StreamReply)>;
-
-        GreetStream(AsyncHelloClient *self, const StreamRequest &request)
-            : channel_(self->ctx_), reader_(self->stub_.get(), request, channel_) {}
-
-        template<typename CompletionToken>
-        auto read_next(CompletionToken &&token) {
-            return channel_.async_receive(std::forward<CompletionToken>(token));
-        }
-
-        struct GreetReader : public grpc::ClientReadReactor<StreamReply> {
-            GreetReader(AsyncHello::Stub *stub, const StreamRequest &request, channel_t &channel) : channel_(channel) {
-                stub->async()->greet_stream(&ctx_, &request, this);
-                StartRead(&reply_);
-                StartCall();
-            }
-
-            void OnReadDone(bool ok) override {
-                if (ok) {
-                    channel_.async_send({}, reply_, asio::use_future).get();
-                    StartRead(&reply_);
-                }
-            }
-
-            void OnDone(const grpc::Status &status) override {
-                if (!status.ok()) { channel_.async_send(to_exception_ptr(status), reply_, asio::use_future).get(); }
-                channel_.close();
-            }
-
-        private:
-            ClientContext ctx_;
-            StreamReply reply_;
-            channel_t &channel_;
-        };
-
-    private:
-        channel_t channel_;
-        GreetReader reader_;
-    };
 
 private:
     asio::io_context &ctx_;
