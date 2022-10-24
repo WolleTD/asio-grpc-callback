@@ -2,6 +2,7 @@
 #include "hello.grpc.pb.h"
 #include <asio/awaitable.hpp>
 #include <asio/co_spawn.hpp>
+#include <asio/detached.hpp>
 #include <asio/io_context.hpp>
 #include <asio/signal_set.hpp>
 #include <asio/steady_timer.hpp>
@@ -81,9 +82,9 @@ auto greet_coro(const Request *request, Reply *reply) -> awaitable<grpc::Status>
 
 class AsyncHelloServiceImpl final : public AsyncHello::CallbackService {
 public:
-    using executor_type = asio::io_context::executor_type;
+    using executor_type = asio::any_io_executor;
 
-    explicit AsyncHelloServiceImpl(asio::io_context &ctx) : ex(ctx.get_executor()) {}
+    explicit AsyncHelloServiceImpl(executor_type ex) : ex(std::move(ex)) {}
 
 private:
     ServerUnaryReactor *greet(CallbackServerContext *ctx, const Request *request, Reply *reply) override {
@@ -162,7 +163,8 @@ private:
 };
 
 struct HelloServer : asio_grpc::Server {
-    HelloServer(asio::io_context &ctx, const std::string &address) : asio_grpc::Server(ctx), async_service(ctx) {
+    template<typename Executor, typename = asio_grpc::enable_for_executor_t<Executor>>
+    HelloServer(Executor ex, const std::string &address) : asio_grpc::Server(ex), async_service(ex) {
         grpc::EnableDefaultHealthCheckService(true);
         auto builder = grpc::ServerBuilder();
 
@@ -181,6 +183,23 @@ private:
     AsyncHelloServiceImpl async_service;
 };
 
+#ifdef __cpp_impl_coroutine
+awaitable<void> run_server(std::string addr) {
+    auto ex = co_await asio::this_coro::executor;
+    auto server = HelloServer(ex, addr);
+    print("Waiting for clients...\n");
+
+    auto sig = asio::signal_set(ex, SIGINT, SIGTERM);
+    sig.async_wait([&server](auto, int) {
+        print("Shutting down server\n");
+        server.shutdown();
+    });
+
+    co_await server.async_wait(use_awaitable);
+    print("Server stopped\n");
+}
+#endif
+
 int main(int argc, const char *argv[]) {
     if (argc != 2) {
         print(stderr, "usage: {} ADDRESS[:PORT]\n", argv[0]);
@@ -188,11 +207,15 @@ int main(int argc, const char *argv[]) {
     }
 
     asio::io_context ctx;
-    auto server = HelloServer(ctx, argv[1]);
 
+#ifdef __cpp_impl_coroutine
+    co_spawn(ctx, run_server(argv[1]), asio::detached);
+#else
+    auto server = HelloServer(ctx.get_executor(), argv[1]);
     auto sig = asio::signal_set(ctx, SIGINT, SIGTERM);
     sig.async_wait([&](auto, int) { server.shutdown(); });
     server.async_wait([](auto) { print("Server stopped\n"); });
+#endif
 
     print("asio event loop running in {}\n", current_thread_id());
     ctx.run();
