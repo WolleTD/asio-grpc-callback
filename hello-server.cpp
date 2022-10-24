@@ -1,5 +1,7 @@
 #include "asio-grpc.h"
 #include "hello.grpc.pb.h"
+#include <asio/awaitable.hpp>
+#include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
 #include <asio/signal_set.hpp>
 #include <asio/steady_timer.hpp>
@@ -9,6 +11,10 @@
 #include <thread>
 #include <utility>
 
+#ifdef __cpp_impl_coroutine
+using asio::awaitable;
+using asio::use_awaitable;
+#endif
 using fmt::format;
 using fmt::print;
 using grpc::CallbackServerContext;
@@ -39,6 +45,40 @@ class HelloServiceImpl final : public Hello::Service {
     }
 };
 
+#ifdef __cpp_impl_coroutine
+struct unary_coro_handler {
+    explicit unary_coro_handler(ServerUnaryReactor *reactor) : reactor_(reactor) {}
+
+    void operator()(const std::exception_ptr &eptr, const grpc::Status &status) {
+        try {
+            if (eptr) { std::rethrow_exception(eptr); }
+            reactor_->Finish(status);
+        } catch (std::exception &e) {
+            print("Coroutine exception: {}\n", e.what());
+            reactor_->Finish(grpc::Status::CANCELLED);
+        } catch (...) {
+            print("Catched something not an excpetion!\n");
+            reactor_->Finish(grpc::Status::CANCELLED);
+        }
+    }
+
+private:
+    ServerUnaryReactor *reactor_;
+};
+
+auto greet_coro(const Request *request, Reply *reply) -> awaitable<grpc::Status> {
+    auto msg = format("Hello {}!", request->name());
+    reply->set_greeting(msg);
+
+    auto timer = asio::steady_timer(co_await asio::this_coro::executor);
+
+    timer.expires_after(std::chrono::milliseconds(request->delay_ms()));
+    co_await timer.async_wait(asio::use_awaitable);
+    print("asio callback in a coro thread {}\n", current_thread_id());
+    co_return grpc::Status::OK;
+}
+#endif
+
 class AsyncHelloServiceImpl final : public AsyncHello::CallbackService {
 public:
     using executor_type = asio::io_context::executor_type;
@@ -50,6 +90,9 @@ private:
         fmt::print("Server reacting async in Thread {}\n", current_thread_id());
 
         auto *reactor = ctx->DefaultReactor();
+#ifdef __cpp_impl_coroutine
+        co_spawn(ex, greet_coro(request, reply), unary_coro_handler(reactor));
+#else
         auto timer_ptr = std::make_unique<asio::steady_timer>(ex);
         auto &timer = *timer_ptr;
 
@@ -60,7 +103,7 @@ private:
             reply->set_greeting(msg);
             reactor->Finish(ec ? grpc::Status::CANCELLED : grpc::Status::OK);
         });
-
+#endif
         return reactor;
     }
 
