@@ -4,6 +4,8 @@ project(hello-protobuf)
 
 set(CMAKE_CXX_STANDARD 20)
 
+option(USE_ASIO_CORO "Use experimental::coro in server stream (if C++20 is supported)" ON)
+
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_SOURCE_DIR}/cmake)
 include(CPM)
 include(ProtobufGenerateGrpc)
@@ -30,6 +32,9 @@ protobuf_generate_cpp_grpc(TARGET hw_grpc_proto)
 
 add_executable(hello-server hello-server.cpp)
 target_link_libraries(hello-server hw_grpc_proto fmt asio)
+if (USE_ASIO_CORO)
+    target_compile_definitions(hello-server PRIVATE USE_ASIO_CORO)
+endif()
 add_executable(hello-client hello-client.cpp)
 target_link_libraries(hello-client hw_grpc_proto fmt asio)
 

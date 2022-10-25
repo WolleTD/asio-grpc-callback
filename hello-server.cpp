@@ -1,8 +1,14 @@
 #include "asio-grpc.h"
 #include "hello.grpc.pb.h"
 #include <asio/awaitable.hpp>
+#ifdef __cpp_impl_coroutine
 #include <asio/co_spawn.hpp>
 #include <asio/detached.hpp>
+#ifdef USE_ASIO_CORO
+#include <asio/experimental/coro.hpp>
+#include <asio/experimental/use_coro.hpp>
+#endif
+#endif
 #include <asio/io_context.hpp>
 #include <asio/signal_set.hpp>
 #include <asio/steady_timer.hpp>
@@ -15,6 +21,10 @@
 #ifdef __cpp_impl_coroutine
 using asio::awaitable;
 using asio::use_awaitable;
+#ifdef USE_ASIO_CORO
+using asio::experimental::coro;
+using asio::experimental::use_coro;
+#endif
 #endif
 using fmt::format;
 using fmt::print;
@@ -114,9 +124,15 @@ private:
 
         struct Greeter : ServerWriteReactor<StreamReply> {
             Greeter(const executor_type &ex, std::string message, size_t delay_ms, size_t num_replies)
-                : timer(ex), message(std::move(message)), delay(delay_ms), num_replies(num_replies) {
+#if defined USE_ASIO_CORO && defined __cpp_impl_coroutine
+                : ex(ex), generator(hello_generator(std::move(message), delay_ms, num_replies)) {
+#else
+                : ex(ex), timer(ex), message(std::move(message)), delay(delay_ms), num_replies(num_replies) {
+#endif
                 send_next();
             }
+
+            [[nodiscard]] executor_type get_executor() const { return ex; }
 
             void OnDone() override { delete this; }
 
@@ -131,11 +147,34 @@ private:
         private:
 #ifdef __cpp_impl_coroutine
             void send_next() {
-                co_spawn(timer.get_executor(), send_next_impl(), [this](const std::exception_ptr &eptr) {
+                co_spawn(ex, send_next_impl(), [this](const std::exception_ptr &eptr) {
                     if (eptr) Finish(grpc::Status::CANCELLED);
                 });
             }
 
+#ifdef USE_ASIO_CORO
+            awaitable<void> send_next_impl() {
+                if (auto reply = co_await generator.async_resume(use_awaitable)) {
+                    StartWrite(*reply);
+                } else {
+                    Finish(grpc::Status::OK);
+                }
+            }
+
+            coro<const StreamReply *> hello_generator(std::string message, size_t delay_ms, size_t num_replies) {
+                asio::steady_timer timer(co_await asio::this_coro::executor);
+                StreamReply reply;
+                reply.set_greeting(message);
+
+                for (int i = 1; i <= num_replies; i++) {
+                    timer.expires_after(std::chrono::milliseconds(delay_ms));
+                    co_await timer.async_wait(use_coro);
+                    print("asio stream dank coro callback in thread {}\n", current_thread_id());
+                    reply.set_count(i);
+                    co_yield &reply;
+                }
+            }
+#else
             awaitable<void> send_next_impl() {
                 if (count <= num_replies) {
                     timer.expires_after(delay);
@@ -150,6 +189,8 @@ private:
                     Finish(grpc::Status::OK);
                 }
             }
+#endif
+
 #else
             void send_next() {
                 if (count <= num_replies) {
@@ -172,11 +213,16 @@ private:
             }
 #endif
 
+            executor_type ex;
+#if defined USE_ASIO_CORO && defined __cpp_impl_coroutine
+            coro<const StreamReply *> generator;
+#else
             asio::steady_timer timer;
             std::string message;
             std::chrono::milliseconds delay;
             size_t count = 1;
             size_t num_replies;
+#endif
         };
 
         return new Greeter(ex, msg, request->base().delay_ms(), request->count());
