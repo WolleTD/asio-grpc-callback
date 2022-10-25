@@ -39,6 +39,8 @@ using hello::Reply;
 using hello::Request;
 using hello::StreamReply;
 using hello::StreamRequest;
+using std::nullopt;
+using std::optional;
 
 std::string current_thread_id() {
     std::stringstream ss;
@@ -57,13 +59,17 @@ class HelloServiceImpl final : public Hello::Service {
 };
 
 #ifdef __cpp_impl_coroutine
-struct unary_coro_handler {
-    explicit unary_coro_handler(ServerUnaryReactor *reactor) : reactor_(reactor) {}
+template<typename T>
+concept GrpcReactor = requires(T *t) { t->Finish(grpc::Status{}); };
 
-    void operator()(const std::exception_ptr &eptr, const grpc::Status &status) {
+template<GrpcReactor Reactor>
+struct reactor_coro_handler {
+    explicit reactor_coro_handler(Reactor *reactor) : reactor_(reactor) {}
+
+    void operator()(const std::exception_ptr &eptr, const std::optional<grpc::Status> &status) {
         try {
             if (eptr) { std::rethrow_exception(eptr); }
-            reactor_->Finish(status);
+            if (status) { reactor_->Finish(*status); }
         } catch (std::exception &e) {
             print("Coroutine exception: {}\n", e.what());
             reactor_->Finish(grpc::Status::CANCELLED);
@@ -74,7 +80,7 @@ struct unary_coro_handler {
     }
 
 private:
-    ServerUnaryReactor *reactor_;
+    Reactor *reactor_;
 };
 
 auto greet_coro(const Request *request, Reply *reply) -> awaitable<grpc::Status> {
@@ -102,7 +108,7 @@ private:
 
         auto *reactor = ctx->DefaultReactor();
 #ifdef __cpp_impl_coroutine
-        co_spawn(ex, greet_coro(request, reply), unary_coro_handler(reactor));
+        co_spawn(ex, greet_coro(request, reply), reactor_coro_handler(reactor));
 #else
         auto timer_ptr = std::make_unique<asio::steady_timer>(ex);
         auto &timer = *timer_ptr;
@@ -146,18 +152,15 @@ private:
 
         private:
 #ifdef __cpp_impl_coroutine
-            void send_next() {
-                co_spawn(ex, send_next_impl(), [this](const std::exception_ptr &eptr) {
-                    if (eptr) Finish(grpc::Status::CANCELLED);
-                });
-            }
+            void send_next() { co_spawn(ex, send_next_impl(), reactor_coro_handler(this)); }
 
 #ifdef USE_ASIO_CORO
-            awaitable<void> send_next_impl() {
+            awaitable<optional<grpc::Status>> send_next_impl() {
                 if (auto reply = co_await generator.async_resume(use_awaitable)) {
                     StartWrite(*reply);
+                    co_return nullopt;
                 } else {
-                    Finish(grpc::Status::OK);
+                    co_return grpc::Status::OK;
                 }
             }
 
@@ -175,7 +178,7 @@ private:
                 }
             }
 #else
-            awaitable<void> send_next_impl() {
+            awaitable<optional<grpc::Status>> send_next_impl() {
                 if (count <= num_replies) {
                     timer.expires_after(delay);
                     co_await timer.async_wait(use_awaitable);
@@ -185,8 +188,9 @@ private:
                     reply.set_count(static_cast<int32_t>(count));
                     count += 1;
                     StartWrite(&reply);
+                    co_return nullopt;
                 } else {
-                    Finish(grpc::Status::OK);
+                    co_return grpc::Status::OK;
                 }
             }
 #endif
