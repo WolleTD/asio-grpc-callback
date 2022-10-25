@@ -129,6 +129,28 @@ private:
             }
 
         private:
+#ifdef __cpp_impl_coroutine
+            void send_next() {
+                co_spawn(timer.get_executor(), send_next_impl(), [this](const std::exception_ptr &eptr) {
+                    if (eptr) Finish(grpc::Status::CANCELLED);
+                });
+            }
+
+            awaitable<void> send_next_impl() {
+                if (count <= num_replies) {
+                    timer.expires_after(delay);
+                    co_await timer.async_wait(use_awaitable);
+                    print("asio stream coro callback in thread {}\n", current_thread_id());
+                    StreamReply reply;
+                    reply.set_greeting(message);
+                    reply.set_count(static_cast<int32_t>(count));
+                    count += 1;
+                    StartWrite(&reply);
+                } else {
+                    Finish(grpc::Status::OK);
+                }
+            }
+#else
             void send_next() {
                 if (count <= num_replies) {
                     timer.expires_after(delay);
@@ -148,6 +170,7 @@ private:
                     Finish(grpc::Status::OK);
                 }
             }
+#endif
 
             asio::steady_timer timer;
             std::string message;
