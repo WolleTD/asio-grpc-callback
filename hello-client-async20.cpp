@@ -1,6 +1,6 @@
 #include "asio-grpc.h"
+#include "common.h"
 #include "hello.grpc.pb.h"
-#include <asio/bind_executor.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
 #include <asio/post.hpp>
@@ -10,56 +10,21 @@
 #include <asio/use_future.hpp>
 #include <fmt/format.h>
 #include <grpcpp/grpcpp.h>
-#include <sstream>
-#include <thread>
 #include <utility>
 
-#ifdef __cpp_impl_coroutine
 using asio::awaitable;
 using asio::use_awaitable;
-#endif
 using asio_grpc::async_initiate_grpc;
 using asio_grpc::StreamChannel;
 using fmt::format;
 using fmt::print;
 using grpc::Channel;
 using hello::AsyncHello;
-using hello::Hello;
 using hello::Reply;
 using hello::Request;
 using hello::StreamReply;
 using hello::StreamRequest;
 
-std::string current_thread_id() {
-    std::stringstream ss;
-    ss << std::this_thread::get_id();
-    return ss.str();
-}
-
-class HelloClient {
-public:
-    explicit HelloClient(const std::shared_ptr<Channel> &channel) : stub_(Hello::NewStub(channel)) {}
-
-    Reply greet(const Request &request) {
-        auto reply = Reply();
-        auto ctx = grpc::ClientContext();
-
-        auto status = stub_->greet(&ctx, request, &reply);
-
-        if (status.ok()) {
-            return reply;
-        } else {
-            throw asio_grpc::grpc_error(status);
-        }
-    }
-
-private:
-    std::unique_ptr<Hello::Stub> stub_;
-};
-
-// While we are symmetrically using the sync/async APIs on client and server in this example, this
-// isn't required and each side can use whatever API they like to.
-// We connect the methods of this client to asio by using the CompletionToken boilerplate.
 class AsyncHelloClient {
 public:
     explicit AsyncHelloClient(asio::io_context &ctx, const std::shared_ptr<Channel> &channel)
@@ -101,8 +66,7 @@ StreamRequest makeStreamRequest(const std::string &name, int32_t delay_ms, int32
     return request;
 }
 
-#ifdef __cpp_impl_coroutine
-void run_cpp20(const std::string &addr, const std::string &name) {
+void run(const std::string &addr, const std::string &name) {
     asio::io_context ctx;
     asio::thread_pool tp{1};
     asio::steady_timer timer(ctx);
@@ -117,12 +81,8 @@ void run_cpp20(const std::string &addr, const std::string &name) {
         print("Thread pool thread is: {}\n", tid);
     });
     auto tp_tid = f.get();
-    print("Starting off with a synchronous request...\n");
-    auto client = HelloClient(grpc::CreateChannel(addr, grpc::InsecureChannelCredentials()));
-    auto reply = client.greet(makeRequest(name, 0));
-    print("Received sync response: {}\n", reply.greeting());
+    print("Starting some async requests!\n");
 
-    print("That worked, now let's throw some async in there!\n");
     auto a_client = AsyncHelloClient(ctx, grpc::CreateChannel(addr, grpc::InsecureChannelCredentials()));
 
     auto error_handler = [](const std::exception_ptr &eptr) {
@@ -177,82 +137,6 @@ void run_cpp20(const std::string &addr, const std::string &name) {
 
     ctx.run();
 }
-#endif
-
-void run_cpp17(const std::string &addr, const std::string &name) {
-    asio::io_context ctx;
-    asio::thread_pool tp{1};
-    asio::steady_timer timer(ctx);
-
-    auto ctx_tid = current_thread_id();
-    print("Main thread id is: {}\n", current_thread_id());
-    auto p = std::promise<std::string>();
-    auto f = p.get_future();
-    asio::post(tp, [&p]() {
-        auto tid = current_thread_id();
-        p.set_value(tid);
-        print("Thread pool thread is: {}\n", tid);
-    });
-    auto tp_tid = f.get();
-    print("Starting off with a synchronous request...\n");
-    auto client = HelloClient(grpc::CreateChannel(addr, grpc::InsecureChannelCredentials()));
-    auto reply = client.greet(makeRequest(name, 0));
-    print("Received sync response: {}\n", reply.greeting());
-
-    print("That worked, now let's throw some async in there!\n");
-    auto a_client = AsyncHelloClient(ctx, grpc::CreateChannel(addr, grpc::InsecureChannelCredentials()));
-
-    a_client.greet(makeRequest(name, 1000),
-                   asio::bind_executor(tp, [&](const std::exception_ptr &, const Reply &reply) {
-                       auto tid = current_thread_id();
-                       print("Received async response 1 in thread {} ({}): {}\n", tid, tid == tp_tid, reply.greeting());
-                   }));
-
-    a_client.greet(makeRequest(name, 2000), [&](const std::exception_ptr &, const Reply &reply) {
-        auto tid = current_thread_id();
-        print("Received async response 2 in thread {} ({}): {}\n", tid, tid == ctx_tid, reply.greeting());
-        print("Restarting timer!\n");
-
-        // This will run last!
-        timer.expires_after(std::chrono::milliseconds(1000));
-        timer.async_wait(
-                [=](auto) { print("Timer started in response 2 expired. Reply was: {}\n", reply.greeting()); });
-    });
-
-    struct Reader {
-        void operator()(const std::exception_ptr &eptr, const std::optional<StreamReply> &reply) {
-            if (!eptr and reply) {
-                auto tid = current_thread_id();
-                print("Received stream response {} ({}) in thread {} ({}): {}\n", reply->count(), i++, tid,
-                      tid == ctx_tid, reply->greeting());
-                stream->read_next(std::move(*this));
-            } else if (not reply) {
-                print("Stream terminated gracefully\n");
-            } else {
-                try {
-                    std::rethrow_exception(eptr);
-                } catch (std::runtime_error &e) { print("Stream error: {} i = {}\n", e.what(), i); }
-            }
-        }
-
-        std::unique_ptr<AsyncHelloClient::GreetStream> stream;
-        const std::string &ctx_tid;
-        int i = 1;
-    };
-
-    timer.expires_after(std::chrono::milliseconds(500));
-    timer.async_wait([&](auto) {
-        a_client.greet(
-                makeRequest(name, 1000), asio::bind_executor(tp, [&](const std::exception_ptr &, const Reply &reply) {
-                    auto tid = current_thread_id();
-                    print("Received async response 3 in thread {} ({}): {}\n", tid, tid == tp_tid, reply.greeting());
-                }));
-        auto stream = a_client.greet_stream(makeStreamRequest(name, 100, 10));
-        auto &stream_ref = *stream;
-        stream_ref.read_next(Reader{std::move(stream), ctx_tid});
-    });
-    ctx.run();
-}
 
 int main(int argc, const char *argv[]) {
     if (argc != 3) {
@@ -263,8 +147,5 @@ int main(int argc, const char *argv[]) {
     auto addr = std::string(argv[1]);
     auto name = std::string(argv[2]);
 
-    run_cpp17(addr, name);
-#ifdef __cpp_impl_coroutine
-    run_cpp20(addr, name);
-#endif
+    run(addr, name);
 }
