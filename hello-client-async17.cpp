@@ -1,6 +1,6 @@
 #include "asio-grpc.h"
 #include "common.h"
-#include "hello.grpc.pb.h"
+#include "hello-client.h"
 #include <asio/bind_executor.hpp>
 #include <asio/io_context.hpp>
 #include <asio/post.hpp>
@@ -47,21 +47,6 @@ private:
     asio::io_context &ctx_;
     std::unique_ptr<Hello::Stub> stub_;
 };
-
-Request makeRequest(const std::string &name, int32_t delay_ms) {
-    Request request;
-    request.set_name(name);
-    request.set_delay_ms(delay_ms);
-    return request;
-}
-
-StreamRequest makeStreamRequest(const std::string &name, int32_t delay_ms, int32_t num_replies) {
-    StreamRequest request;
-    request.mutable_base()->set_name(name);
-    request.mutable_base()->set_delay_ms(delay_ms);
-    request.set_count(num_replies);
-    return request;
-}
 
 void run(const std::string &addr, const std::string &name) {
     asio::io_context ctx;
@@ -132,16 +117,4 @@ void run(const std::string &addr, const std::string &name) {
         stream_ref.read_next(Reader{std::move(stream), ctx_tid});
     });
     ctx.run();
-}
-
-int main(int argc, const char *argv[]) {
-    if (argc != 3) {
-        print(stderr, "usage: {} ADDRESS[:PORT] NAME\n", argv[0]);
-        return 1;
-    }
-
-    auto addr = std::string(argv[1]);
-    auto name = std::string(argv[2]);
-
-    run(addr, name);
 }

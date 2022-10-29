@@ -1,19 +1,19 @@
-#include "asio-grpc.h"
 #include "common.h"
+#include "hello-server.h"
 #include "hello.grpc.pb.h"
 #include <asio/awaitable.hpp>
 #include <asio/co_spawn.hpp>
-#include <asio/detached.hpp>
-#ifdef USE_ASIO_CORO
-#include <asio/experimental/coro.hpp>
-#include <asio/experimental/use_coro.hpp>
-#endif
-#include <asio/io_context.hpp>
-#include <asio/signal_set.hpp>
 #include <asio/steady_timer.hpp>
 #include <fmt/format.h>
 #include <grpcpp/grpcpp.h>
 #include <utility>
+
+#ifdef USE_ASIO_CORO
+
+#include <asio/experimental/coro.hpp>
+#include <asio/experimental/use_coro.hpp>
+
+#endif
 
 using asio::awaitable;
 using asio::use_awaitable;
@@ -115,6 +115,7 @@ private:
             void send_next() { co_spawn(ex, send_next_impl(), reactor_coro_handler(this)); }
 
 #ifdef USE_ASIO_CORO
+
             awaitable<optional<grpc::Status>> send_next_impl() {
                 if (auto reply = co_await generator.async_resume(use_awaitable)) {
                     StartWrite(*reply);
@@ -137,6 +138,7 @@ private:
                     co_yield &reply;
                 }
             }
+
 #else
             awaitable<optional<grpc::Status>> send_next_impl() {
                 if (count <= num_replies) {
@@ -173,51 +175,15 @@ private:
     executor_type ex;
 };
 
-struct HelloServer : asio_grpc::Server {
-    template<typename Executor, typename = asio_grpc::enable_for_executor_t<Executor>>
-    HelloServer(Executor ex, const std::string &address) : asio_grpc::Server(ex), async_service(ex) {
-        grpc::EnableDefaultHealthCheckService(true);
-        auto builder = grpc::ServerBuilder();
+HelloServer::HelloServer(const asio::any_io_executor &ex, const std::string &address)
+    : asio_grpc::Server(ex), service(new HelloServiceImpl(ex)) {
+    grpc::EnableDefaultHealthCheckService(true);
+    auto builder = grpc::ServerBuilder();
 
-        builder.AddListeningPort(address, grpc::InsecureServerCredentials());
-        builder.RegisterService(&async_service);
+    builder.AddListeningPort(address, grpc::InsecureServerCredentials());
+    builder.RegisterService(service.get());
 
-        set_grpc_server(builder.BuildAndStart());
-    }
-
-    HelloServer(HelloServer &&) noexcept = delete;
-    HelloServer &operator=(HelloServer &&) noexcept = delete;
-
-private:
-    HelloServiceImpl async_service;
-};
-
-awaitable<void> run_server(std::string addr) {
-    auto ex = co_await asio::this_coro::executor;
-    auto server = HelloServer(ex, addr);
-    print("Waiting for clients...\n");
-
-    auto sig = asio::signal_set(ex, SIGINT, SIGTERM);
-    sig.async_wait([&server](auto, int) {
-        print("Shutting down server\n");
-        server.shutdown();
-    });
-
-    co_await server.async_wait(use_awaitable);
-    print("Server stopped\n");
+    set_grpc_server(builder.BuildAndStart());
 }
 
-int main(int argc, const char *argv[]) {
-    if (argc != 2) {
-        print(stderr, "usage: {} ADDRESS[:PORT]\n", argv[0]);
-        return 1;
-    }
-
-    asio::io_context ctx;
-
-    co_spawn(ctx, run_server(argv[1]), asio::detached);
-
-    print("asio event loop running in {}\n", current_thread_id());
-    ctx.run();
-    print("asio event loop stopped\n");
-}
+HelloServer::~HelloServer() = default;

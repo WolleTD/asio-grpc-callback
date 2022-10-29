@@ -23,7 +23,7 @@ private:
     grpc::StatusCode code_;
 };
 
-std::exception_ptr to_exception_ptr(const grpc::Status &status) {
+inline std::exception_ptr to_exception_ptr(const grpc::Status &status) {
     return status.ok() ? std::exception_ptr{} : std::make_exception_ptr(grpc_error(status));
 }
 

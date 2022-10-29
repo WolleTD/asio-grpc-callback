@@ -1,9 +1,7 @@
-#include "asio-grpc.h"
 #include "common.h"
+#include "hello-server.h"
 #include "hello.grpc.pb.h"
 #include <asio/awaitable.hpp>
-#include <asio/io_context.hpp>
-#include <asio/signal_set.hpp>
 #include <asio/steady_timer.hpp>
 #include <fmt/format.h>
 #include <grpcpp/grpcpp.h>
@@ -99,39 +97,15 @@ private:
     executor_type ex;
 };
 
-struct HelloServer : asio_grpc::Server {
-    template<typename Executor, typename = asio_grpc::enable_for_executor_t<Executor>>
-    HelloServer(Executor ex, const std::string &address) : asio_grpc::Server(ex), async_service(ex) {
-        grpc::EnableDefaultHealthCheckService(true);
-        auto builder = grpc::ServerBuilder();
+HelloServer::HelloServer(const asio::any_io_executor &ex, const std::string &address)
+    : asio_grpc::Server(ex), service(new HelloServiceImpl(ex)) {
+    grpc::EnableDefaultHealthCheckService(true);
+    auto builder = grpc::ServerBuilder();
 
-        builder.AddListeningPort(address, grpc::InsecureServerCredentials());
-        builder.RegisterService(&async_service);
+    builder.AddListeningPort(address, grpc::InsecureServerCredentials());
+    builder.RegisterService(service.get());
 
-        set_grpc_server(builder.BuildAndStart());
-    }
-
-    HelloServer(HelloServer &&) noexcept = delete;
-    HelloServer &operator=(HelloServer &&) noexcept = delete;
-
-private:
-    HelloServiceImpl async_service;
-};
-
-int main(int argc, const char *argv[]) {
-    if (argc != 2) {
-        print(stderr, "usage: {} ADDRESS[:PORT]\n", argv[0]);
-        return 1;
-    }
-
-    asio::io_context ctx;
-
-    auto server = HelloServer(ctx.get_executor(), argv[1]);
-    auto sig = asio::signal_set(ctx, SIGINT, SIGTERM);
-    sig.async_wait([&](auto, int) { server.shutdown(); });
-    server.async_wait([](auto) { print("Server stopped\n"); });
-
-    print("asio event loop running in {}\n", current_thread_id());
-    ctx.run();
-    print("asio event loop stopped\n");
+    set_grpc_server(builder.BuildAndStart());
 }
+
+HelloServer::~HelloServer() = default;
