@@ -7,6 +7,7 @@
 using fmt::format;
 using fmt::print;
 using grpc::ServerContext;
+using grpc::ServerWriter;
 using hello::Hello;
 using hello::Reply;
 using hello::Request;
@@ -18,6 +19,27 @@ class HelloServiceImpl final : public Hello::Service {
         print("Server reacting in Thread {}\n", current_thread_id());
         auto msg = format("Hello {}!", request->name());
         reply->set_greeting(msg);
+        std::this_thread::sleep_for(std::chrono::milliseconds(request->delay_ms()));
+
+        return grpc::Status::OK;
+    }
+
+    grpc::Status greet_stream(ServerContext *context, const StreamRequest *request,
+                              ServerWriter<StreamReply> *writer) override {
+        print("Server reacting stream in Thread {}\n", current_thread_id());
+        auto msg = format("Hello {}!", request->base().name());
+        auto delay = std::chrono::milliseconds(request->base().delay_ms());
+        auto count = request->count();
+
+        StreamReply reply;
+        reply.set_greeting(msg);
+
+        for (int32_t i = 1; i <= count; i++) {
+            std::this_thread::sleep_for(delay);
+            print("asio stream send in thread {}\n", current_thread_id());
+            reply.set_count(i);
+            if (not writer->Write(reply)) { return grpc::Status::CANCELLED; }
+        }
 
         return grpc::Status::OK;
     }
