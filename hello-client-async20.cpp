@@ -1,5 +1,5 @@
-#include "asio-grpc-client.h"
 #include "common.h"
+#include "hello-client-async.h"
 #include "hello-client.h"
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
@@ -10,46 +10,11 @@
 #include <asio/use_future.hpp>
 #include <fmt/format.h>
 #include <grpcpp/grpcpp.h>
-#include <utility>
 
 using asio::awaitable;
 using asio::use_awaitable;
-using asio_grpc::async_initiate_grpc;
-using asio_grpc::StreamChannel;
 using fmt::format;
 using fmt::print;
-using grpc::Channel;
-using hello::Hello;
-using hello::Reply;
-using hello::Request;
-using hello::StreamReply;
-using hello::StreamRequest;
-
-class HelloClient {
-public:
-    explicit HelloClient(asio::io_context &ctx, const std::shared_ptr<Channel> &channel)
-        : ctx_(ctx), stub_(Hello::NewStub(channel)) {}
-
-    template<typename CompletionToken>
-    auto greet(const Request &request, CompletionToken &&token) {
-        return async_initiate_grpc<Reply>(
-                ctx_, token, [this, &request](grpc::ClientContext *ctx, Reply *reply, auto &&handler) {
-                    stub_->async()->greet(ctx, &request, reply, std::forward<decltype(handler)>(handler));
-                });
-    }
-
-    using GreetStream = StreamChannel<StreamReply>;
-
-    std::unique_ptr<GreetStream> greet_stream(const StreamRequest &request) {
-        return std::make_unique<GreetStream>(ctx_, [this, &request](auto *ctx, auto *reactor) {
-            stub_->async()->greet_stream(ctx, &request, reactor);
-        });
-    }
-
-private:
-    asio::io_context &ctx_;
-    std::unique_ptr<Hello::Stub> stub_;
-};
 
 void run(const std::string &addr, const std::string &name) {
     asio::io_context ctx;
