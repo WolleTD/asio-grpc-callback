@@ -24,12 +24,9 @@ awaitable<void> run_server(std::string addr) {
     print("Waiting for clients...\n");
 
     auto sig = asio::signal_set(ex, SIGINT, SIGTERM);
-    sig.async_wait([&server](auto, int) {
-        print("Shutting down server\n");
-        server.shutdown();
-    });
-
-    co_await server.async_wait(use_awaitable);
+    co_await sig.async_wait(use_awaitable);
+    print("Shutting down server\n");
+    co_await server.shutdown(use_awaitable);
     print("Server stopped\n");
 }
 #endif
