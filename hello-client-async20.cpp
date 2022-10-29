@@ -19,16 +19,16 @@ using asio_grpc::StreamChannel;
 using fmt::format;
 using fmt::print;
 using grpc::Channel;
-using hello::AsyncHello;
+using hello::Hello;
 using hello::Reply;
 using hello::Request;
 using hello::StreamReply;
 using hello::StreamRequest;
 
-class AsyncHelloClient {
+class HelloClient {
 public:
-    explicit AsyncHelloClient(asio::io_context &ctx, const std::shared_ptr<Channel> &channel)
-        : ctx_(ctx), stub_(AsyncHello::NewStub(channel)) {}
+    explicit HelloClient(asio::io_context &ctx, const std::shared_ptr<Channel> &channel)
+        : ctx_(ctx), stub_(Hello::NewStub(channel)) {}
 
     template<typename CompletionToken>
     auto greet(const Request &request, CompletionToken &&token) {
@@ -48,7 +48,7 @@ public:
 
 private:
     asio::io_context &ctx_;
-    std::unique_ptr<AsyncHello::Stub> stub_;
+    std::unique_ptr<Hello::Stub> stub_;
 };
 
 Request makeRequest(const std::string &name, int32_t delay_ms) {
@@ -83,7 +83,7 @@ void run(const std::string &addr, const std::string &name) {
     auto tp_tid = f.get();
     print("Starting some async requests!\n");
 
-    auto a_client = AsyncHelloClient(ctx, grpc::CreateChannel(addr, grpc::InsecureChannelCredentials()));
+    auto a_client = HelloClient(ctx, grpc::CreateChannel(addr, grpc::InsecureChannelCredentials()));
 
     auto error_handler = [](const std::exception_ptr &eptr) {
         try {

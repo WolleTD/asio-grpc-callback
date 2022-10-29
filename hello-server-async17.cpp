@@ -14,17 +14,17 @@ using fmt::print;
 using grpc::CallbackServerContext;
 using grpc::ServerUnaryReactor;
 using grpc::ServerWriteReactor;
-using hello::AsyncHello;
+using hello::Hello;
 using hello::Reply;
 using hello::Request;
 using hello::StreamReply;
 using hello::StreamRequest;
 
-class AsyncHelloServiceImpl final : public AsyncHello::CallbackService {
+class HelloServiceImpl final : public Hello::CallbackService {
 public:
     using executor_type = asio::any_io_executor;
 
-    explicit AsyncHelloServiceImpl(executor_type ex) : ex(std::move(ex)) {}
+    explicit HelloServiceImpl(executor_type ex) : ex(std::move(ex)) {}
 
 private:
     ServerUnaryReactor *greet(CallbackServerContext *ctx, const Request *request, Reply *reply) override {
@@ -115,7 +115,7 @@ struct HelloServer : asio_grpc::Server {
     HelloServer &operator=(HelloServer &&) noexcept = delete;
 
 private:
-    AsyncHelloServiceImpl async_service;
+    HelloServiceImpl async_service;
 };
 
 int main(int argc, const char *argv[]) {

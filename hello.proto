@@ -4,10 +4,6 @@ package hello;
 
 service Hello {
   rpc greet (Request) returns (Reply) {}
-}
-
-service AsyncHello {
-  rpc greet (Request) returns (Reply) {}
   rpc greet_stream (StreamRequest) returns (stream StreamReply) {}
 }
 
