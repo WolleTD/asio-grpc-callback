@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(hello-protobuf)
+project(asio-grpc-callback)
 
 set(CMAKE_CXX_STANDARD 20)
 
@@ -25,36 +25,4 @@ if (asio_ADDED)
     target_link_libraries(asio INTERFACE pthread)
 endif ()
 
-add_library(hw_grpc_proto OBJECT hello.proto)
-target_include_directories(hw_grpc_proto PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
-target_link_libraries(hw_grpc_proto PUBLIC gRPC::grpc++)
-protobuf_generate_cpp_grpc(TARGET hw_grpc_proto)
-
-add_library(common common.cpp)
-target_link_libraries(common INTERFACE fmt asio)
-
-add_library(server-main OBJECT server-main.cpp)
-target_link_libraries(server-main PUBLIC common)
-add_library(client-main OBJECT client-main.cpp)
-target_link_libraries(client-main PUBLIC common)
-
-set(variants sync async17)
-if ("${CMAKE_CXX_COMPILE_FEATURES}" MATCHES cxx_std_20)
-    list(APPEND variants async20)
-endif ()
-
-foreach (variant ${variants})
-    add_executable(hello-server-${variant} hello-server-${variant}.cpp)
-    target_link_libraries(hello-server-${variant} hw_grpc_proto server-main)
-    if (USE_ASIO_CORO)
-        target_compile_definitions(hello-server-${variant} PRIVATE USE_ASIO_CORO)
-    endif ()
-    add_executable(hello-client-${variant} hello-client-${variant}.cpp)
-    target_link_libraries(hello-client-${variant} hw_grpc_proto client-main)
-endforeach ()
-
-if ("${CMAKE_CXX_COMPILE_FEATURES}" MATCHES cxx_std_20)
-    add_executable(test-asio test-asio.cpp)
-    target_link_libraries(test-asio common)
-    target_compile_features(test-asio PRIVATE cxx_std_20)
-endif ()
+add_subdirectory(src)
