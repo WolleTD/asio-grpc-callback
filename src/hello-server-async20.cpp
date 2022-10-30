@@ -2,6 +2,7 @@
 #include "hello-server.h"
 #include "hello.grpc.pb.h"
 #include <asio/awaitable.hpp>
+#include <asio/cancellation_signal.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/steady_timer.hpp>
 #include <fmt/format.h>
@@ -21,6 +22,9 @@ using asio::use_awaitable;
 using asio::experimental::coro;
 using asio::experimental::use_coro;
 #endif
+using asio_grpc::asio_server_unary_reactor;
+using asio_grpc::asio_server_write_reactor;
+using asio_grpc::default_reactor_handler;
 using fmt::format;
 using fmt::print;
 using grpc::CallbackServerContext;
@@ -33,30 +37,6 @@ using hello::StreamReply;
 using hello::StreamRequest;
 using std::nullopt;
 using std::optional;
-
-template<typename T>
-concept GrpcReactor = requires(T *t) { t->Finish(grpc::Status{}); };
-
-template<GrpcReactor Reactor>
-struct reactor_coro_handler {
-    explicit reactor_coro_handler(Reactor *reactor) : reactor_(reactor) {}
-
-    void operator()(const std::exception_ptr &eptr, const std::optional<grpc::Status> &status) {
-        try {
-            if (eptr) { std::rethrow_exception(eptr); }
-            if (status) { reactor_->Finish(*status); }
-        } catch (std::exception &e) {
-            print("Coroutine exception: {}\n", e.what());
-            reactor_->Finish(grpc::Status::CANCELLED);
-        } catch (...) {
-            print("Catched something not an excpetion!\n");
-            reactor_->Finish(grpc::Status::CANCELLED);
-        }
-    }
-
-private:
-    Reactor *reactor_;
-};
 
 auto greet_coro(const Request *request, Reply *reply) -> awaitable<grpc::Status> {
     auto msg = format("Hello {}!", request->name());
@@ -77,11 +57,11 @@ public:
     explicit HelloServiceImpl(executor_type ex) : ex(std::move(ex)) {}
 
 private:
-    ServerUnaryReactor *greet(CallbackServerContext *ctx, const Request *request, Reply *reply) override {
+    ServerUnaryReactor *greet(CallbackServerContext *, const Request *request, Reply *reply) override {
         print("Server reacting async in Thread {}\n", current_thread_id());
 
-        auto *reactor = ctx->DefaultReactor();
-        co_spawn(ex, greet_coro(request, reply), reactor_coro_handler(reactor));
+        auto *reactor = new asio_server_unary_reactor(ex);
+        co_spawn(ex, greet_coro(request, reply), default_reactor_handler(reactor));
         return reactor;
     }
 
@@ -89,30 +69,20 @@ private:
         print("Server reacting stream in Thread {}\n", current_thread_id());
         auto msg = format("Hello {}!", request->base().name());
 
-        struct Greeter : ServerWriteReactor<StreamReply> {
+        struct Greeter : asio_server_write_reactor<StreamReply> {
+            using base = asio_server_write_reactor<StreamReply>;
+
             Greeter(const executor_type &ex, std::string message, size_t delay_ms, size_t num_replies)
 #if defined USE_ASIO_CORO
-                : ex(ex), generator(hello_generator(std::move(message), delay_ms, num_replies)) {
+                : base(ex), generator(hello_generator(std::move(message), delay_ms, num_replies)) {
 #else
-                : ex(ex), timer(ex), message(std::move(message)), delay(delay_ms), num_replies(num_replies) {
+                : base(ex), timer(ex), message(std::move(message)), delay(delay_ms), num_replies(num_replies) {
 #endif
                 send_next();
             }
 
-            [[nodiscard]] executor_type get_executor() const { return ex; }
-
-            void OnDone() override { delete this; }
-
-            void OnWriteDone(bool ok) override {
-                if (ok) {
-                    send_next();
-                } else {
-                    Finish(grpc::Status::CANCELLED);
-                }
-            }
-
         private:
-            void send_next() { co_spawn(ex, send_next_impl(), reactor_coro_handler(this)); }
+            void send_next() final { co_spawn(get_executor(), send_next_impl(), default_reactor_handler(this)); }
 
 #ifdef USE_ASIO_CORO
 
@@ -157,7 +127,6 @@ private:
             }
 #endif
 
-            executor_type ex;
 #if defined USE_ASIO_CORO
             coro<const StreamReply *> generator;
 #else

@@ -3,12 +3,116 @@
 
 #include "common.h"
 #include <asio/experimental/concurrent_channel.hpp>
+#include <asio/post.hpp>
 #include <grpcpp/server.h>
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#include <utility>
+
+#define DEBUG_HANDLER
+#ifdef DEBUG_HANDLER
+#include <fmt/core.h>
+#define DEBUG_PRINT(...) ::fmt::print(__VA_ARGS__)
+#else
+#define DEBUG_PRINT(...)
+#endif
 
 namespace asio_grpc {
+#ifdef __cpp_concepts
+template<typename T>
+concept GrpcReactor = requires(T *t) { t->Finish(grpc::Status{}); };
+
+template<typename T>
+concept HasSlot = requires(T *t) { t->slot(); };
+
+#define GRPC_REACTOR ::asio_grpc::GrpcReactor
+#define ENABLE_FOR_SLOT(X) std::enable_if_t<HasSlot<X>>
+#else
+#define GRPC_REACTOR typename
+#define ENABLE_FOR_SLOT(X) void
+#endif
+
+template<GRPC_REACTOR Reactor>
+struct default_reactor_handler {
+    using cancellation_slot_type = asio::cancellation_slot;
+
+    default_reactor_handler(Reactor *reactor, cancellation_slot_type slot) : reactor_(reactor), slot_(slot) {}
+
+    template<typename = ENABLE_FOR_SLOT(Reactor)>
+    explicit default_reactor_handler(Reactor *reactor) : default_reactor_handler(reactor, reactor->slot()) {}
+
+    [[nodiscard]] cancellation_slot_type get_cancellation_slot() const noexcept { return slot_; }
+
+    void operator()(const std::exception_ptr &eptr, const std::optional<grpc::Status> &status) const {
+        try {
+            if (eptr) { std::rethrow_exception(eptr); }
+            if (status) { reactor_->Finish(*status); }
+        } catch (std::exception &e) {
+            DEBUG_PRINT("Coroutine exception: {}\n", e.what());
+            reactor_->Finish(grpc::Status::CANCELLED);
+        } catch (...) {
+            DEBUG_PRINT("Catched something not an excpetion!\n");
+            reactor_->Finish(grpc::Status::CANCELLED);
+        }
+    }
+
+    void operator()(const std::error_code &ec, const std::optional<grpc::Status> &status) const {
+        (*this)(ec ? std::make_exception_ptr(std::system_error(ec)) : nullptr, status);
+    }
+
+private:
+    Reactor *reactor_;
+    cancellation_slot_type slot_;
+};
+
+template<GRPC_REACTOR Reactor, typename Executor = asio::any_io_executor>
+struct asio_server_reactor : Reactor {
+    using executor_type = Executor;
+
+    explicit asio_server_reactor(executor_type ex) : ex(std::move(ex)) {}
+
+    void OnCancel() final {
+        asio::post(ex, [this]() { signal.emit(asio::cancellation_type::terminal); });
+    }
+
+    [[nodiscard]] executor_type get_executor() const { return ex; }
+
+    asio::cancellation_slot slot() { return signal.slot(); }
+
+private:
+    executor_type ex;
+    asio::cancellation_signal signal;
+};
+
+struct asio_server_unary_reactor : asio_server_reactor<grpc::ServerUnaryReactor> {
+    explicit asio_server_unary_reactor(const asio::any_io_executor &ex)
+        : asio_server_reactor<grpc::ServerUnaryReactor>(ex) {}
+
+    void OnDone() final { delete this; }
+};
+
+template<typename Reply>
+struct asio_server_write_reactor : asio_server_reactor<grpc::ServerWriteReactor<Reply>> {
+    using base = asio_server_reactor<grpc::ServerWriteReactor<Reply>>;
+    using executor_type = base::executor_type;
+
+    explicit asio_server_write_reactor(const executor_type &ex) : base(ex) {}
+
+    void OnDone() final { delete this; }
+
+    void OnWriteDone(bool ok) final {
+        if (ok) {
+            send_next();
+        } else {
+            base::Finish(grpc::Status::CANCELLED);
+        }
+    }
+
+private:
+    virtual void send_next() = 0;
+};
+
 struct Server {
     template<typename Executor, typename = asio_grpc::enable_for_executor_t<Executor>>
     Server(Executor ex, std::unique_ptr<grpc::Server> server) : server_(std::move(server)), wait_channel_(ex) {}

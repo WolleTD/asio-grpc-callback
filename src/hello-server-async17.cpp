@@ -2,11 +2,16 @@
 #include "hello-server.h"
 #include "hello.grpc.pb.h"
 #include <asio/awaitable.hpp>
+#include <asio/bind_cancellation_slot.hpp>
 #include <asio/steady_timer.hpp>
 #include <fmt/format.h>
 #include <grpcpp/grpcpp.h>
 #include <utility>
 
+using asio::bind_cancellation_slot;
+using asio_grpc::asio_server_unary_reactor;
+using asio_grpc::asio_server_write_reactor;
+using asio_grpc::default_reactor_handler;
 using fmt::format;
 using fmt::print;
 using grpc::CallbackServerContext;
@@ -25,71 +30,72 @@ public:
     explicit HelloServiceImpl(executor_type ex) : ex(std::move(ex)) {}
 
 private:
-    ServerUnaryReactor *greet(CallbackServerContext *ctx, const Request *request, Reply *reply) override {
+    ServerUnaryReactor *greet(CallbackServerContext *, const Request *request, Reply *reply) override {
         print("Server reacting async in Thread {}\n", current_thread_id());
 
-        auto *reactor = ctx->DefaultReactor();
+        auto reactor = new asio_server_unary_reactor(ex);
         auto timer_ptr = std::make_unique<asio::steady_timer>(ex);
         auto &timer = *timer_ptr;
 
+        auto handler = default_reactor_handler(reactor);
+        auto cs = asio::get_associated_cancellation_slot(handler);
+
         timer.expires_after(std::chrono::milliseconds(request->delay_ms()));
-        timer.async_wait([request, reply, reactor, timer_ptr = std::move(timer_ptr)](auto ec) {
-            print("asio callback in thread {}\n", current_thread_id());
-            auto msg = format("Hello {}!", request->name());
-            reply->set_greeting(msg);
-            reactor->Finish(ec ? grpc::Status::CANCELLED : grpc::Status::OK);
-        });
+        timer.async_wait(
+                bind_cancellation_slot(cs, [request, reply, handler, timer_ptr = std::move(timer_ptr)](auto ec) {
+                    if (not ec) {
+                        print("asio callback in thread {}\n", current_thread_id());
+                        auto msg = format("Hello {}!", request->name());
+                        reply->set_greeting(msg);
+                    }
+                    handler(ec, grpc::Status::OK);
+                }));
         return reactor;
     }
+
+    struct Greeter : asio_server_write_reactor<StreamReply> {
+        using base = asio_server_write_reactor<StreamReply>;
+
+        Greeter(const executor_type &ex, std::string message, size_t delay_ms, size_t num_replies)
+            : base(ex), timer(ex), message(std::move(message)), delay(delay_ms), num_replies(num_replies) {
+            send_next();
+        }
+
+    private:
+        void send_next() final { send_next_impl(default_reactor_handler(this)); }
+
+        template<typename Handler>
+        void send_next_impl(Handler handler) {
+            if (count <= num_replies) {
+                auto cs = asio::get_associated_cancellation_slot(handler);
+                timer.expires_after(delay);
+                timer.async_wait(bind_cancellation_slot(cs, [this, handler](auto ec) {
+                    if (not ec) {
+                        print("asio stream callback in thread {}\n", current_thread_id());
+                        StreamReply reply;
+                        reply.set_greeting(message);
+                        reply.set_count(static_cast<int32_t>(count));
+                        count += 1;
+                        StartWrite(&reply);
+                    }
+                    // if ec contains an error, the handler shall cancel the operation
+                    handler(ec, std::nullopt);
+                }));
+            } else {
+                handler(nullptr, grpc::Status::OK);
+            }
+        }
+
+        asio::steady_timer timer;
+        std::string message;
+        std::chrono::milliseconds delay;
+        size_t count = 1;
+        size_t num_replies;
+    };
 
     ServerWriteReactor<StreamReply> *greet_stream(CallbackServerContext *, const StreamRequest *request) override {
         print("Server reacting stream in Thread {}\n", current_thread_id());
         auto msg = format("Hello {}!", request->base().name());
-
-        struct Greeter : ServerWriteReactor<StreamReply> {
-            Greeter(const executor_type &ex, std::string message, size_t delay_ms, size_t num_replies)
-                : ex(ex), timer(ex), message(std::move(message)), delay(delay_ms), num_replies(num_replies) {
-                send_next();
-            }
-
-            void OnDone() override { delete this; }
-
-            void OnWriteDone(bool ok) override {
-                if (ok) {
-                    send_next();
-                } else {
-                    Finish(grpc::Status::CANCELLED);
-                }
-            }
-
-        private:
-            void send_next() {
-                if (count <= num_replies) {
-                    timer.expires_after(delay);
-                    timer.async_wait([this](auto ec) {
-                        print("asio stream callback in thread {}\n", current_thread_id());
-                        if (ec) {
-                            Finish(grpc::Status::CANCELLED);
-                        } else {
-                            StreamReply reply;
-                            reply.set_greeting(message);
-                            reply.set_count(static_cast<int32_t>(count));
-                            count += 1;
-                            StartWrite(&reply);
-                        }
-                    });
-                } else {
-                    Finish(grpc::Status::OK);
-                }
-            }
-
-            executor_type ex;
-            asio::steady_timer timer;
-            std::string message;
-            std::chrono::milliseconds delay;
-            size_t count = 1;
-            size_t num_replies;
-        };
 
         return new Greeter(ex, msg, request->base().delay_ms(), request->count());
     }
