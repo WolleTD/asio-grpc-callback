@@ -2,6 +2,7 @@
 #include <asio/bind_cancellation_slot.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/detached.hpp>
+#include <asio/experimental/awaitable_operators.hpp>
 #include <asio/experimental/co_spawn.hpp>
 #include <asio/experimental/coro.hpp>
 #include <asio/io_context.hpp>
@@ -115,6 +116,21 @@ void cancellation() {
         sig2.emit(cancellation_type::total);
     });
 
+    ctx.run();
+    ctx.restart();
+
+    auto op_coro = []() -> awaitable<void> {
+        auto ex = co_await this_coro::executor;
+        steady_timer timer1(ex, 100ms), timer2(ex, 50ms);
+        std::error_code ec1, ec2;
+
+        using namespace asio::experimental::awaitable_operators;
+        auto res = co_await (timer1.async_wait(redirect_error(use_awaitable, ec1)) ||
+                             timer2.async_wait(redirect_error(use_awaitable, ec2)));
+        print("Completed coro index: {} (expected 1)\nec1: {} ec2: {}\n", res.index(), ec1.message(), ec2.message());
+    };
+
+    co_spawn(ctx, op_coro(), asio::detached);
     ctx.run();
 }
 
