@@ -1,14 +1,24 @@
 #ifndef HELLO_PROTOBUF_ASIO_GRPC_CLIENT_H
 #define HELLO_PROTOBUF_ASIO_GRPC_CLIENT_H
 
+#include <asio/bind_cancellation_slot.hpp>
 #include <asio/experimental/concurrent_channel.hpp>
 #include <asio/post.hpp>
+#include <asio/redirect_error.hpp>
 #include <asio/use_future.hpp>
 #include <grpcpp/impl/codegen/client_callback.h>
 #include <grpcpp/impl/codegen/client_context.h>
 #include <grpcpp/impl/codegen/status.h>
 #include <optional>
 #include <stdexcept>
+
+#define DEBUG_HANDLER
+#ifdef DEBUG_HANDLER
+#include <fmt/core.h>
+#define DEBUG_PRINT(...) ::fmt::print(__VA_ARGS__)
+#else
+#define DEBUG_PRINT(...)
+#endif
 
 namespace asio_grpc {
 class grpc_error : public std::runtime_error {
@@ -73,10 +83,19 @@ auto async_initiate_grpc(Ex ex, CompletionToken &&token, Call &&call) {
         using hT = decltype(handler);
         using dhT = std::decay_t<hT>;
         auto sp_handler = std::make_shared<dhT>(std::forward<hT>(handler));
+        auto cs = asio::get_associated_cancellation_slot(*sp_handler);
+        if (cs.is_connected()) {
+            cs.assign([ctx](asio::cancellation_type_t type) {
+                if (type != asio::cancellation_type::none) { ctx->TryCancel(); }
+            });
+        }
 
         call(ctx.get(), reply.get(), [reply, ctx, work, sp_handler](const grpc::Status &status) {
             auto ex = asio::get_associated_executor(*sp_handler, work.get_executor());
-            asio::post(ex, [status, reply, sp_handler]() { (*sp_handler)(to_exception_ptr(status), *reply); });
+            auto cs = asio::get_associated_cancellation_slot(*sp_handler);
+            asio::post(ex, asio::bind_cancellation_slot(cs, [status, reply, sp_handler]() {
+                           (*sp_handler)(to_exception_ptr(status), *reply);
+                       }));
         });
     };
 
@@ -97,49 +116,78 @@ struct StreamChannel {
 
     template<typename Ex, GRPC_STREAM_CALL(Reply) RequestHandler, typename = enable_for_executor_t<Ex>>
     StreamChannel(Ex ex, RequestHandler &&request)
-        : channel_(ex), reader_(std::forward<RequestHandler>(request), channel_) {
-        reader_.StartCall();
+        : channel_(std::make_shared<channel_t>(ex)), reader_(std::make_shared<StreamReader>(std::forward<RequestHandler>(request), channel_)) {
+        reader_->set_self(reader_);
+        reader_->StartCall();
     }
 
     template<typename Ctx, GRPC_STREAM_CALL(Reply) RequestHandler, typename = enable_for_execution_context_t<Ctx>>
     StreamChannel(Ctx &ctx, RequestHandler &&request)
         : StreamChannel(ctx.get_executor(), std::forward<RequestHandler>(request)) {}
 
+    ~StreamChannel() {
+        reader_->Cancel(true);
+    }
+
     template<GRPC_STREAM_COMPLETION_TOKEN(Reply) CompletionToken>
     auto read_next(CompletionToken &&token) {
-        return channel_.async_receive(std::forward<CompletionToken>(token));
+        return channel_->async_receive(std::forward<CompletionToken>(token));
+    }
+
+    void cancel() {
+        reader_->Cancel(false);
     }
 
     struct StreamReader : public grpc::ClientReadReactor<Reply> {
         using base = grpc::ClientReadReactor<Reply>;
 
         template<GRPC_STREAM_CALL(Reply) RequestHandler>
-        StreamReader(RequestHandler &&request, channel_t &channel) : channel_(channel) {
+        StreamReader(RequestHandler &&request, const std::shared_ptr<channel_t> &channel) : channel_(channel) {
             request(&ctx_, this);
             base::StartRead(&reply_);
         }
 
+        void set_self(const std::shared_ptr<StreamReader> &self) {
+            self_ = self;
+        }
+
         void OnReadDone(bool ok) override {
-            if (ok) {
-                channel_.async_send({}, reply_, asio::use_future).get();
+            if (ok && channel_->is_open()) {
+                std::error_code ec;
+                channel_->async_send({}, reply_, redirect_error(asio::use_future, ec)).get();
+                if (ec) DEBUG_PRINT("async_send error: {}\n", ec.message());
                 base::StartRead(&reply_);
             }
         }
 
         void OnDone(const grpc::Status &status) override {
-            channel_.async_send(to_exception_ptr(status), std::nullopt, asio::use_future).get();
-            channel_.close();
+            auto self = std::exchange(self_, nullptr);
+            if (channel_->is_open()) {
+                std::error_code ec;
+                channel_->async_send(to_exception_ptr(status), std::nullopt, redirect_error(asio::use_future, ec)).get();
+                if (ec) DEBUG_PRINT("async_send error: {}\n", ec.message());
+                channel_->close();
+            }
+        }
+
+        void Cancel(bool destructed) {
+            if (self_) ctx_.TryCancel();
+            if (destructed) {
+                channel_->close();
+                channel_->cancel();
+            }
         }
 
     private:
         grpc::ClientContext ctx_;
         Reply reply_;
-        channel_t &channel_;
+        std::shared_ptr<channel_t> channel_;
+        std::shared_ptr<StreamReader> self_;
     };
 
 private:
-    channel_t channel_;
-    StreamReader reader_;
+    std::shared_ptr<channel_t> channel_;
+    std::shared_ptr<StreamReader> reader_;
 };
 }// namespace asio_grpc
 

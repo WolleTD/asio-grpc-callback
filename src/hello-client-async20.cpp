@@ -2,6 +2,7 @@
 #include "hello-client-async.h"
 #include "hello-client.h"
 #include <asio/co_spawn.hpp>
+#include <asio/experimental/awaitable_operators.hpp>
 #include <asio/io_context.hpp>
 #include <asio/post.hpp>
 #include <asio/steady_timer.hpp>
@@ -75,15 +76,65 @@ void run(const std::string &addr, const std::string &name) {
         int i = 1;
         while (auto reply = co_await stream->read_next(use_awaitable)) {
             auto tid = current_thread_id();
-            print("Received stream response {} ({}) in thread {} ({}): {}\n", reply->count(), i++, tid, tid == ctx_tid,
-                  reply->greeting());
+            print("Received stream 1 response {} ({}) in thread {} ({}): {}\n", reply->count(), i++, tid,
+                  tid == ctx_tid, reply->greeting());
         }
-        print("Stream terminated gracefully\n");
+        print("Stream 1 terminated gracefully\n");
+    };
+
+    auto coro4 = [&]() -> awaitable<void> {
+        using namespace asio::experimental::awaitable_operators;
+        using namespace std::chrono_literals;
+
+        asio::steady_timer timer(ctx, 100ms);
+        auto request = makeRequest(name, 1000);
+        auto reply = co_await (a_client.greet(request, use_awaitable) || timer.async_wait(use_awaitable));
+        auto tid = current_thread_id();
+        if (reply.index() == 0) {
+            auto r = std::get<0>(reply);
+            print("Received async response 1 in thread {} ({}): {}\n", tid, tid == tp_tid, r.greeting());
+        } else {
+            print("Timeout async response 1 in thread {} ({})\n", tid, tid == tp_tid);
+        }
+    };
+
+    auto coro5 = [&]() -> awaitable<void> {
+        using namespace std::chrono_literals;
+        {
+            auto stream = a_client.greet_stream(makeStreamRequest(name, 100, 10));
+            int i = 1;
+            while (auto reply = co_await stream->read_next(use_awaitable)) {
+                auto tid = current_thread_id();
+                print("Received stream 2 response {} ({}) in thread {} ({}): {}\n", reply->count(), i++, tid,
+                      tid == ctx_tid, reply->greeting());
+                if (i > 5) {
+                    asio::steady_timer timer(ctx, 110ms);
+                    co_await timer.async_wait(use_awaitable);
+                    break;
+                }
+            }
+            print("Stream 2 terminated gracefully\n");
+        }
+        try {
+            asio::steady_timer timer(ctx, 600ms);
+            auto stream = a_client.greet_stream(makeStreamRequest(name, 100, 10));
+            timer.async_wait([&stream](auto) { stream->cancel(); });
+            int i = 1;
+            while (auto reply = co_await stream->read_next(use_awaitable)) {
+                auto tid = current_thread_id();
+                print("Received stream 3 response {} ({}) in thread {} ({}): {}\n", reply->count(), i++, tid,
+                      tid == ctx_tid, reply->greeting());
+            }
+            // Won't run.
+            print("Stream 3 terminated gracefully\n");
+        } catch (std::exception &e) { print("Stream 3 terminated with error: {}\n", e.what()); }
     };
 
     co_spawn(tp, coro1, error_handler);
     co_spawn(ctx, coro2, error_handler);
     co_spawn(ctx, coro3, error_handler);
+    co_spawn(tp, coro4, error_handler);
+    co_spawn(ctx, coro5, error_handler);
 
     ctx.run();
 }
