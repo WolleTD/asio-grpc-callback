@@ -3,13 +3,15 @@
 #include <asio/co_spawn.hpp>
 #include <asio/detached.hpp>
 #include <asio/experimental/awaitable_operators.hpp>
-#include <asio/experimental/co_spawn.hpp>
-#include <asio/experimental/coro.hpp>
+#include <asio/experimental/concurrent_channel.hpp>
 #include <asio/io_context.hpp>
 #include <asio/steady_timer.hpp>
 #include <asio/use_future.hpp>
 #include <fmt/format.h>
 #include <thread>
+
+#include <asio/experimental/co_spawn.hpp>
+#include <asio/experimental/coro.hpp>
 
 using asio::any_io_executor;
 using asio::awaitable;
@@ -134,7 +136,54 @@ void cancellation() {
     ctx.run();
 }
 
+void channel_check() {
+    using namespace std::chrono_literals;
+    using channel_t = asio::experimental::concurrent_channel<void(std::error_code, std::optional<int>)>;
+
+    io_context ctx;
+    io_context ctx2;
+    channel_t channel(ctx);
+
+    auto producer = [](channel_t &channel) -> awaitable<void> {
+        try {
+            steady_timer timer(co_await this_coro::executor);
+            for (int i = 0; i < 10; i++) {
+                co_await channel.async_send({}, i, use_awaitable);
+                timer.expires_after(10ms);
+                co_await timer.async_wait(use_awaitable);
+            }
+            channel.close();
+        } catch (std::exception &e) { print("async_send error: {}\n", e.what()); }
+    };
+
+    auto consumer = [](channel_t &channel) -> awaitable<void> {
+        try {
+            steady_timer timer(co_await this_coro::executor);
+            while (auto i = co_await channel.async_receive(use_awaitable)) {
+                print("i is {}\n", *i);
+                timer.expires_after(12ms);
+                co_await timer.async_wait(use_awaitable);
+            }
+        } catch (std::exception &e) { print("async_receive error: {}\n", e.what()); }
+    };
+
+    auto canceller = [](channel_t &channel) -> awaitable<void> {
+        steady_timer timer(co_await this_coro::executor, 60ms);
+        co_await timer.async_wait(use_awaitable);
+        channel.close();
+        channel.cancel();
+    };
+
+    co_spawn(ctx2, producer(channel), asio::detached);
+    co_spawn(ctx, consumer(channel), asio::detached);
+    co_spawn(ctx, canceller(channel), asio::detached);
+    auto t = std::thread([&]() { ctx2.run(); });
+    ctx.run();
+    t.join();
+}
+
 int main() {
     coro_exploring();
     cancellation();
+    channel_check();
 }
