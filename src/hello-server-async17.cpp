@@ -42,7 +42,7 @@ private:
         return reactor;
     }
 
-    ServerWriteReactor<StreamReply> *greet_stream(CallbackServerContext *ctx, const StreamRequest *request) override {
+    ServerWriteReactor<StreamReply> *greet_stream(CallbackServerContext *, const StreamRequest *request) override {
         print("Server reacting stream in Thread {}\n", current_thread_id());
         auto msg = format("Hello {}!", request->base().name());
 

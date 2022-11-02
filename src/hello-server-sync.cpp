@@ -15,7 +15,7 @@ using hello::StreamReply;
 using hello::StreamRequest;
 
 class HelloServiceImpl final : public Hello::Service {
-    grpc::Status greet(ServerContext *ctx, const Request *request, Reply *reply) override {
+    grpc::Status greet(ServerContext *, const Request *request, Reply *reply) override {
         print("Server reacting in Thread {}\n", current_thread_id());
         auto msg = format("Hello {}!", request->name());
         reply->set_greeting(msg);
@@ -24,7 +24,7 @@ class HelloServiceImpl final : public Hello::Service {
         return grpc::Status::OK;
     }
 
-    grpc::Status greet_stream(ServerContext *context, const StreamRequest *request,
+    grpc::Status greet_stream(ServerContext *, const StreamRequest *request,
                               ServerWriter<StreamReply> *writer) override {
         print("Server reacting stream in Thread {}\n", current_thread_id());
         auto msg = format("Hello {}!", request->base().name());

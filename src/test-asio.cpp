@@ -113,7 +113,7 @@ void cancellation() {
     // ...this one accidentally uses the same slot, overriding the previous line. Every signal/slot is a 1:1 binding
     co_spawn(ctx, invoking_coro(timer), bind_cancellation_slot(sig2.slot(), asio::detached));
 
-    canceller.async_wait([&](std::error_code ec) {
+    canceller.async_wait([&](std::error_code) {
         sig1.emit(cancellation_type::total);
         sig2.emit(cancellation_type::total);
     });

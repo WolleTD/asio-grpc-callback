@@ -85,7 +85,7 @@ private:
         return reactor;
     }
 
-    ServerWriteReactor<StreamReply> *greet_stream(CallbackServerContext *ctx, const StreamRequest *request) override {
+    ServerWriteReactor<StreamReply> *greet_stream(CallbackServerContext *, const StreamRequest *request) override {
         print("Server reacting stream in Thread {}\n", current_thread_id());
         auto msg = format("Hello {}!", request->base().name());
 
@@ -130,7 +130,7 @@ private:
                 StreamReply reply;
                 reply.set_greeting(message);
 
-                for (int i = 1; i <= num_replies; i++) {
+                for (size_t i = 1; i <= num_replies; i++) {
                     timer.expires_after(std::chrono::milliseconds(delay_ms));
                     co_await timer.async_wait(use_coro);
                     print("asio stream dank coro callback in thread {}\n", current_thread_id());

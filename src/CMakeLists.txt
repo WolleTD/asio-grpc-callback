@@ -1,3 +1,5 @@
+add_compile_options(-Wall -Wextra)
+
 add_library(hw_grpc_proto OBJECT hello.proto)
 target_include_directories(hw_grpc_proto PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(hw_grpc_proto PUBLIC gRPC::grpc++)
