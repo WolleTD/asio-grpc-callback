@@ -46,7 +46,7 @@ auto greet_coro(const Request *request, Reply *reply) -> awaitable<grpc::Status>
 
     timer.expires_after(std::chrono::milliseconds(request->delay_ms()));
     co_await timer.async_wait(asio::use_awaitable);
-    print("asio callback in a coro thread {}\n", current_thread_id());
+    print("asio callback for {} in a coro thread {}\n", request->name(), current_thread_id());
     co_return grpc::Status::OK;
 }
 

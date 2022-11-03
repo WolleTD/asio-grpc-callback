@@ -137,4 +137,21 @@ void run(const std::string &addr, const std::string &name) {
     co_spawn(ctx, coro5, error_handler);
 
     ctx.run();
+    ctx.restart();
+
+    auto coro12 = [&](std::string name, int32_t delay_ms) -> awaitable<void> {
+        auto request = makeRequest(name, delay_ms);
+        auto reply = co_await a_client.greet(request, use_awaitable);
+        print("Received async response to request \"{}\": {}\n", request.name(), reply.greeting());
+    };
+
+    const int N = 1000;
+    for (int i = 0; i < N; i++) { co_spawn(ctx, coro12(fmt::format("Hello {}", i), 0), error_handler); }
+    using std::chrono::floor;
+    using std::chrono::milliseconds;
+    using std::chrono::system_clock;
+    auto start = system_clock::now();
+    ctx.run();
+    auto dur = system_clock::now() - start;
+    print("{} calls took {}ms in an io_context\n", N, floor<milliseconds>(dur).count());
 }
