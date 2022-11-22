@@ -78,9 +78,30 @@ void run(const std::string &addr, const std::string &name) {
                     auto tid = current_thread_id();
                     print("Received async response 3 in thread {} ({}): {}\n", tid, tid == tp_tid, reply.greeting());
                 }));
-        auto stream = a_client.greet_stream(makeStreamRequest(name, 100, 10));
+        auto stream =
+                std::make_unique<HelloClient::GreetStream>(a_client.greet_stream(makeStreamRequest(name, 100, 10)));
         auto &stream_ref = *stream;
         stream_ref.read_next(Reader{std::move(stream), ctx_tid});
     });
+
+    using namespace std::chrono_literals;
+    asio::steady_timer timer2(ctx, 100ms);
+    asio::cancellation_signal sig1, sig2;
+
+    auto request = makeRequest(name, 1000);
+    timer.async_wait(asio::bind_cancellation_slot(sig1.slot(), [&](auto ec) {
+        if (not ec) sig2.emit(asio::cancellation_type::all);
+    }));
+    a_client.greet(request, asio::bind_cancellation_slot(sig2.slot(), [&](auto ec, const Reply &r) {
+                       auto tid = current_thread_id();
+                       if (not ec) {
+                           sig1.emit(asio::cancellation_type::all);
+                           print("Received async response 4 in thread {} ({}): {}\n", tid, tid == ctx_tid,
+                                 r.greeting());
+                       } else {
+                           print("Timeout async response 4 in thread {} ({})\n", tid, tid == ctx_tid);
+                       }
+                   }));
+
     ctx.run();
 }

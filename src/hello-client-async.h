@@ -28,10 +28,9 @@ public:
 
     using GreetStream = StreamChannel<StreamReply>;
 
-    std::unique_ptr<GreetStream> greet_stream(const StreamRequest &request) {
-        return std::make_unique<GreetStream>(ctx_, [this, &request](auto *ctx, auto *reactor) {
-            stub_->async()->greet_stream(ctx, &request, reactor);
-        });
+    GreetStream greet_stream(const StreamRequest &request) {
+        return {ctx_,
+                [this, &request](auto *ctx, auto *reactor) { stub_->async()->greet_stream(ctx, &request, reactor); }};
     }
 
 private:

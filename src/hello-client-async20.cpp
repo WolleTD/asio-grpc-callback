@@ -74,7 +74,7 @@ void run(const std::string &addr, const std::string &name) {
         co_spawn(tp, coro3_1, error_handler);
         auto stream = a_client.greet_stream(makeStreamRequest(name, 100, 10));
         int i = 1;
-        while (auto reply = co_await stream->read_next(use_awaitable)) {
+        while (auto reply = co_await stream.read_next(use_awaitable)) {
             auto tid = current_thread_id();
             print("Received stream 1 response {} ({}) in thread {} ({}): {}\n", reply->count(), i++, tid,
                   tid == ctx_tid, reply->greeting());
@@ -92,9 +92,9 @@ void run(const std::string &addr, const std::string &name) {
         auto tid = current_thread_id();
         if (reply.index() == 0) {
             auto r = std::get<0>(reply);
-            print("Received async response 1 in thread {} ({}): {}\n", tid, tid == tp_tid, r.greeting());
+            print("Received async response 4 in thread {} ({}): {}\n", tid, tid == tp_tid, r.greeting());
         } else {
-            print("Timeout async response 1 in thread {} ({})\n", tid, tid == tp_tid);
+            print("Timeout async response 4 in thread {} ({})\n", tid, tid == tp_tid);
         }
     };
 
@@ -103,7 +103,7 @@ void run(const std::string &addr, const std::string &name) {
         {
             auto stream = a_client.greet_stream(makeStreamRequest(name, 100, 10));
             int i = 1;
-            while (auto reply = co_await stream->read_next(use_awaitable)) {
+            while (auto reply = co_await stream.read_next(use_awaitable)) {
                 auto tid = current_thread_id();
                 print("Received stream 2 response {} ({}) in thread {} ({}): {}\n", reply->count(), i++, tid,
                       tid == ctx_tid, reply->greeting());
@@ -118,9 +118,9 @@ void run(const std::string &addr, const std::string &name) {
         try {
             asio::steady_timer timer(ctx, 600ms);
             auto stream = a_client.greet_stream(makeStreamRequest(name, 100, 10));
-            timer.async_wait([&stream](auto) { stream->cancel(); });
+            timer.async_wait([&stream](auto) { stream.cancel(); });
             int i = 1;
-            while (auto reply = co_await stream->read_next(use_awaitable)) {
+            while (auto reply = co_await stream.read_next(use_awaitable)) {
                 auto tid = current_thread_id();
                 print("Received stream 3 response {} ({}) in thread {} ({}): {}\n", reply->count(), i++, tid,
                       tid == ctx_tid, reply->greeting());

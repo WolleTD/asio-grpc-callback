@@ -125,8 +125,13 @@ struct StreamChannel {
     StreamChannel(Ctx &ctx, RequestHandler &&request)
         : StreamChannel(ctx.get_executor(), std::forward<RequestHandler>(request)) {}
 
+    StreamChannel(const StreamChannel &) = delete;
+    StreamChannel& operator=(const StreamChannel &) = delete;
+    StreamChannel(StreamChannel &&) noexcept = default;
+    StreamChannel& operator=(StreamChannel &&) noexcept = default;
+
     ~StreamChannel() {
-        reader_->Cancel(true);
+        if (reader_) reader_->Cancel(true);
     }
 
     template<GRPC_STREAM_COMPLETION_TOKEN(Reply) CompletionToken>
