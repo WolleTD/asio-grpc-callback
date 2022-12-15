@@ -1,3 +1,8 @@
+// client-main.cpp
+//
+// SPDX-FileCopyrightText: 2022 Eicke Herbertz
+// SPDX-License-Identifier: MIT
+
 #include <fmt/format.h>
 
 // Declare here to avoid including hello-client.h and linking the protocol definition

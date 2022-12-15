@@ -1,3 +1,8 @@
+// common.cpp
+//
+// SPDX-FileCopyrightText: 2022 Eicke Herbertz
+// SPDX-License-Identifier: MIT
+
 #include <sstream>
 #include <string>
 #include <thread>

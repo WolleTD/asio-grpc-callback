@@ -1,3 +1,8 @@
+// server-main.cpp
+//
+// SPDX-FileCopyrightText: 2022 Eicke Herbertz
+// SPDX-License-Identifier: MIT
+
 #include "common.h"
 #include "hello-server.h"
 #include <asio/awaitable.hpp>

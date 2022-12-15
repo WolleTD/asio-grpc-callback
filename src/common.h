@@ -1,3 +1,8 @@
+// common.h
+//
+// SPDX-FileCopyrightText: 2022 Eicke Herbertz
+// SPDX-License-Identifier: MIT
+
 #include <asio/execution/executor.hpp>
 #include <asio/execution_context.hpp>
 #include <asio/is_executor.hpp>

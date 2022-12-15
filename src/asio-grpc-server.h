@@ -1,3 +1,8 @@
+// asio-grpc-server.h
+//
+// SPDX-FileCopyrightText: 2022 Eicke Herbertz
+// SPDX-License-Identifier: MIT
+
 #ifndef HELLO_PROTOBUF_ASIO_GRPC_SERVER_H
 #define HELLO_PROTOBUF_ASIO_GRPC_SERVER_H
 

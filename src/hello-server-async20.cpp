@@ -1,3 +1,8 @@
+// hello-server-async20.cpp
+//
+// SPDX-FileCopyrightText: 2022 Eicke Herbertz
+// SPDX-License-Identifier: MIT
+
 #include "common.h"
 #include "hello-server.h"
 #include "hello.grpc.pb.h"

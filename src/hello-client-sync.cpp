@@ -1,3 +1,8 @@
+// hello-client-sync.cpp
+//
+// SPDX-FileCopyrightText: 2022 Eicke Herbertz
+// SPDX-License-Identifier: MIT
+
 #include "asio-grpc-client.h"
 #include "common.h"
 #include "hello-client.h"

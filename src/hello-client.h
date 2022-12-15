@@ -1,3 +1,8 @@
+// hello-client.h
+//
+// SPDX-FileCopyrightText: 2022 Eicke Herbertz
+// SPDX-License-Identifier: MIT
+
 #include "hello.grpc.pb.h"
 #include <string>
 
